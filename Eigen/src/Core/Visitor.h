@@ -472,12 +472,13 @@ struct mcu_ieee_finite_helper {
 template <>
 struct mcu_ieee_finite_helper<float> {
   static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE bool all_finite(const float* data, Index n) {
+    if (n <= 0) return true;
     constexpr std::uint32_t kExpMask = 0x7F800000u;
     constexpr std::uint32_t kExpLsb = 0x00800000u;
     constexpr std::uint32_t kSignBit = 0x80000000u;
     std::uint32_t acc = 0;
-    Index i = 0;
-    for (; i + 4 <= n; i += 4) {
+    const Index n4 = n & ~Index(3);
+    for (Index i = 0; i < n4; i += 4) {
       std::uint32_t u0, u1, u2, u3;
       std::memcpy(&u0, data + i + 0, sizeof(u0));
       std::memcpy(&u1, data + i + 1, sizeof(u1));
@@ -486,7 +487,7 @@ struct mcu_ieee_finite_helper<float> {
       acc |= ((u0 & kExpMask) + kExpLsb) | ((u1 & kExpMask) + kExpLsb) |
              ((u2 & kExpMask) + kExpLsb) | ((u3 & kExpMask) + kExpLsb);
     }
-    for (; i < n; ++i) {
+    for (Index i = n4; i < n; ++i) {
       std::uint32_t u;
       std::memcpy(&u, data + i, sizeof(u));
       acc |= (u & kExpMask) + kExpLsb;
@@ -495,10 +496,11 @@ struct mcu_ieee_finite_helper<float> {
   }
 
   static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE bool has_nan(const float* data, Index n) {
+    if (n <= 0) return false;
     constexpr std::uint32_t kAbsMask = 0x7FFFFFFFu;
     constexpr std::uint32_t kInfBits = 0x7F800000u;
-    Index i = 0;
-    for (; i + 4 <= n; i += 4) {
+    const Index n4 = n & ~Index(3);
+    for (Index i = 0; i < n4; i += 4) {
       std::uint32_t u0, u1, u2, u3;
       std::memcpy(&u0, data + i + 0, sizeof(u0));
       std::memcpy(&u1, data + i + 1, sizeof(u1));
@@ -509,7 +511,7 @@ struct mcu_ieee_finite_helper<float> {
         return true;
       }
     }
-    for (; i < n; ++i) {
+    for (Index i = n4; i < n; ++i) {
       std::uint32_t u;
       std::memcpy(&u, data + i, sizeof(u));
       if ((u & kAbsMask) > kInfBits) return true;
@@ -521,12 +523,13 @@ struct mcu_ieee_finite_helper<float> {
 template <>
 struct mcu_ieee_finite_helper<double> {
   static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE bool all_finite(const double* data, Index n) {
+    if (n <= 0) return true;
     constexpr std::uint64_t kExpMask = 0x7FF0000000000000ULL;
     constexpr std::uint64_t kExpLsb = 0x0010000000000000ULL;
     constexpr std::uint64_t kSignBit = 0x8000000000000000ULL;
     std::uint64_t acc = 0;
-    Index i = 0;
-    for (; i + 4 <= n; i += 4) {
+    const Index n4 = n & ~Index(3);
+    for (Index i = 0; i < n4; i += 4) {
       std::uint64_t u0, u1, u2, u3;
       std::memcpy(&u0, data + i + 0, sizeof(u0));
       std::memcpy(&u1, data + i + 1, sizeof(u1));
@@ -535,7 +538,7 @@ struct mcu_ieee_finite_helper<double> {
       acc |= ((u0 & kExpMask) + kExpLsb) | ((u1 & kExpMask) + kExpLsb) |
              ((u2 & kExpMask) + kExpLsb) | ((u3 & kExpMask) + kExpLsb);
     }
-    for (; i < n; ++i) {
+    for (Index i = n4; i < n; ++i) {
       std::uint64_t u;
       std::memcpy(&u, data + i, sizeof(u));
       acc |= (u & kExpMask) + kExpLsb;
@@ -544,10 +547,11 @@ struct mcu_ieee_finite_helper<double> {
   }
 
   static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE bool has_nan(const double* data, Index n) {
+    if (n <= 0) return false;
     constexpr std::uint64_t kAbsMask = 0x7FFFFFFFFFFFFFFFULL;
     constexpr std::uint64_t kInfBits = 0x7FF0000000000000ULL;
-    Index i = 0;
-    for (; i + 4 <= n; i += 4) {
+    const Index n4 = n & ~Index(3);
+    for (Index i = 0; i < n4; i += 4) {
       std::uint64_t u0, u1, u2, u3;
       std::memcpy(&u0, data + i + 0, sizeof(u0));
       std::memcpy(&u1, data + i + 1, sizeof(u1));
@@ -558,7 +562,7 @@ struct mcu_ieee_finite_helper<double> {
         return true;
       }
     }
-    for (; i < n; ++i) {
+    for (Index i = n4; i < n; ++i) {
       std::uint64_t u;
       std::memcpy(&u, data + i, sizeof(u));
       if ((u & kAbsMask) > kInfBits) return true;

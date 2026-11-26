@@ -161,15 +161,15 @@ struct scalar_inner_product_selector {
       Scalar s1 = eval.coeff(1);
       Scalar s2 = eval.coeff(2);
       Scalar s3 = eval.coeff(3);
-      Index k = 4;
-      for (; k + 4 <= size; k += 4) {
+      const Index size4 = size & ~Index(3);
+      for (Index k = 4; k < size4; k += 4) {
         s0 = eval.coeff(s0, k + 0);
         s1 = eval.coeff(s1, k + 1);
         s2 = eval.coeff(s2, k + 2);
         s3 = eval.coeff(s3, k + 3);
       }
       Scalar result = padd(padd(s0, s1), padd(s2, s3));
-      for (; k < size; ++k) {
+      for (Index k = size4; k < size; ++k) {
         result = eval.coeff(result, k);
       }
       return result;
