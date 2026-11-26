@@ -83,6 +83,67 @@ struct selfadjoint_product_selector<MatrixType, OtherType, UpLo, true> {
 
 template <typename MatrixType, typename OtherType, int UpLo>
 struct selfadjoint_product_selector<MatrixType, OtherType, UpLo, false> {
+#if EIGEN_MCU_SMALL_GEMM
+  template <typename ActualOtherRef, bool AlwaysSmall, bool Eligible>
+  struct mcu_syrk_dispatch {
+    typedef typename MatrixType::Scalar Scalar;
+    typedef internal::blas_traits<OtherType> OtherBlasTraits;
+    typedef internal::remove_all_t<typename OtherBlasTraits::DirectLinearAccessType> ActualOtherType_;
+    enum {
+      IsRowMajor = (internal::traits<MatrixType>::Flags & RowMajorBit) ? 1 : 0,
+      OtherIsRowMajor = ActualOtherType_::Flags & RowMajorBit ? 1 : 0
+    };
+    static EIGEN_STRONG_INLINE void run(MatrixType& mat, ActualOtherRef& actualOther, const Scalar& actualAlpha) {
+      const Index size = mat.cols();
+      const Index depth = actualOther.cols();
+      EIGEN_IF_CONSTEXPR(Eligible) {
+        if (size <= EIGEN_MCU_SMALL_GEMM_THRESHOLD && depth <= EIGEN_MCU_SMALL_GEMM_MAX_DEPTH) {
+          internal::mcu_small_gemm_triangular<Scalar, OtherIsRowMajor ? RowMajor : ColMajor,
+                                              OtherIsRowMajor ? ColMajor : RowMajor, IsRowMajor ? RowMajor : ColMajor,
+                                              UpLo>(size, depth, actualOther.data(), actualOther.outerStride(),
+                                                    actualOther.data(), actualOther.outerStride(), mat.data(),
+                                                    mat.outerStride(), actualAlpha);
+          return;
+        }
+      }
+
+      typedef internal::gemm_blocking_space<IsRowMajor ? RowMajor : ColMajor, Scalar, Scalar,
+                                            MatrixType::MaxColsAtCompileTime, MatrixType::MaxColsAtCompileTime,
+                                            ActualOtherType_::MaxColsAtCompileTime>
+          BlockingType;
+
+      BlockingType blocking(size, size, depth, 1, false);
+
+      internal::general_matrix_matrix_triangular_product<
+          Index, Scalar, OtherIsRowMajor ? RowMajor : ColMajor,
+          OtherBlasTraits::NeedToConjugate && NumTraits<Scalar>::IsComplex, Scalar,
+          OtherIsRowMajor ? ColMajor : RowMajor, (!OtherBlasTraits::NeedToConjugate) && NumTraits<Scalar>::IsComplex,
+          IsRowMajor ? RowMajor : ColMajor, MatrixType::InnerStrideAtCompileTime,
+          UpLo>::run(size, depth, actualOther.data(), actualOther.outerStride(), actualOther.data(),
+                     actualOther.outerStride(), mat.data(), mat.innerStride(), mat.outerStride(), actualAlpha,
+                     blocking);
+    }
+  };
+
+  template <typename ActualOtherRef>
+  struct mcu_syrk_dispatch<ActualOtherRef, true, true> {
+    typedef typename MatrixType::Scalar Scalar;
+    typedef internal::blas_traits<OtherType> OtherBlasTraits;
+    typedef internal::remove_all_t<typename OtherBlasTraits::DirectLinearAccessType> ActualOtherType_;
+    enum {
+      IsRowMajor = (internal::traits<MatrixType>::Flags & RowMajorBit) ? 1 : 0,
+      OtherIsRowMajor = ActualOtherType_::Flags & RowMajorBit ? 1 : 0
+    };
+    static EIGEN_STRONG_INLINE void run(MatrixType& mat, ActualOtherRef& actualOther, const Scalar& actualAlpha) {
+      internal::mcu_small_gemm_triangular<Scalar, OtherIsRowMajor ? RowMajor : ColMajor,
+                                          OtherIsRowMajor ? ColMajor : RowMajor, IsRowMajor ? RowMajor : ColMajor,
+                                          UpLo>(mat.cols(), actualOther.cols(), actualOther.data(),
+                                                actualOther.outerStride(), actualOther.data(),
+                                                actualOther.outerStride(), mat.data(), mat.outerStride(), actualAlpha);
+    }
+  };
+#endif
+
   static void run(MatrixType& mat, const OtherType& other, const typename MatrixType::Scalar& alpha) {
     typedef typename MatrixType::Scalar Scalar;
     typedef internal::blas_traits<OtherType> OtherBlasTraits;
@@ -92,6 +153,20 @@ struct selfadjoint_product_selector<MatrixType, OtherType, UpLo, false> {
 
     Scalar actualAlpha = alpha * OtherBlasTraits::extractScalarFactor(other.derived());
 
+#if EIGEN_MCU_SMALL_GEMM
+    constexpr bool kMcuEligible =
+        (internal::is_same<Scalar, float>::value || internal::is_same<Scalar, double>::value) &&
+        internal::is_same<typename OtherType::Scalar, Scalar>::value && (MatrixType::InnerStrideAtCompileTime == 1) &&
+        (ActualOtherType_::InnerStrideAtCompileTime == 1) && bool(internal::traits<MatrixType>::Flags & DirectAccessBit) &&
+        (UpLo == Lower || UpLo == Upper);
+    constexpr bool kMcuAlwaysSmall =
+        kMcuEligible &&
+        (MatrixType::MaxColsAtCompileTime != Dynamic &&
+         MatrixType::MaxColsAtCompileTime <= EIGEN_MCU_SMALL_GEMM_THRESHOLD) &&
+        (ActualOtherType_::MaxColsAtCompileTime != Dynamic &&
+         ActualOtherType_::MaxColsAtCompileTime <= EIGEN_MCU_SMALL_GEMM_MAX_DEPTH);
+    mcu_syrk_dispatch<decltype(actualOther), kMcuAlwaysSmall, kMcuEligible>::run(mat, actualOther, actualAlpha);
+#else
     enum {
       IsRowMajor = (internal::traits<MatrixType>::Flags & RowMajorBit) ? 1 : 0,
       OtherIsRowMajor = ActualOtherType_::Flags & RowMajorBit ? 1 : 0
@@ -114,6 +189,7 @@ struct selfadjoint_product_selector<MatrixType, OtherType, UpLo, false> {
         MatrixType::InnerStrideAtCompileTime, UpLo>::run(size, depth, actualOther.data(), actualOther.outerStride(),
                                                          actualOther.data(), actualOther.outerStride(), mat.data(),
                                                          mat.innerStride(), mat.outerStride(), actualAlpha, blocking);
+#endif
   }
 };
 

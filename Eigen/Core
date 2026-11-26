@@ -21,6 +21,9 @@
 // it's where we do all the compiler/OS/arch detections and define most defaults.
 #include "src/Core/util/Macros.h"
 
+// MCU-targeted fork configuration and Cortex-M defaults
+#include "src/Core/util/McuConfig.h"
+
 // This detects SSE/AVX/NEON/etc. and configure alignment settings
 #include "src/Core/util/ConfigureVectorization.h"
 
@@ -392,6 +395,9 @@ using std::ptrdiff_t;
 #include "src/Core/products/Parallelizer.h"
 #include "src/Core/ProductEvaluators.h"
 #include "src/Core/products/GeneralMatrixVector.h"
+#if EIGEN_MCU_SMALL_GEMM
+#include "src/Core/products/McuSmallGemm.h"
+#endif
 #include "src/Core/products/GeneralMatrixMatrix.h"
 #include "src/Core/SolveTriangular.h"
 #include "src/Core/products/GeneralMatrixMatrixTriangular.h"

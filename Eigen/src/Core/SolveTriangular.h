@@ -55,6 +55,38 @@ struct triangular_solver_selector<Lhs, Rhs, Side, Mode, NoUnrolling, 1> {
   typedef blas_traits<Lhs> LhsProductTraits;
   typedef typename LhsProductTraits::ExtractType ActualLhsType;
   typedef Map<Matrix<RhsScalar, Dynamic, 1>, Aligned> MappedRhs;
+
+#if EIGEN_MCU_SMALL_GEMM
+  enum {
+    LhsOrder = (int(Lhs::Flags) & RowMajorBit) ? RowMajor : ColMajor,
+    EffMode = (Side == OnTheRight) ? (((Mode & Upper) == Upper ? Lower : Upper) | (Mode & UnitDiag)) : Mode,
+    EffOrder = (Side == OnTheRight) ? (LhsOrder == RowMajor ? ColMajor : RowMajor) : LhsOrder
+  };
+
+  template <bool AlwaysSmall, bool Eligible>
+  struct mcu_trsv_dispatch {
+    static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE void run(Index size, const LhsScalar* lhsData, Index lhsStride,
+                                                          RhsScalar* rhsData) {
+      EIGEN_IF_CONSTEXPR(Eligible) {
+        if (size <= EIGEN_MCU_SMALL_TRSM_THRESHOLD) {
+          mcu_small_trsv<RhsScalar, EffMode, EffOrder>(size, lhsData, lhsStride, rhsData);
+          return;
+        }
+      }
+      triangular_solve_vector<LhsScalar, RhsScalar, Index, Side, Mode, LhsProductTraits::NeedToConjugate,
+                              LhsOrder>::run(size, lhsData, lhsStride, rhsData);
+    }
+  };
+
+  template <bool Dummy>
+  struct mcu_trsv_dispatch<true, Dummy> {
+    static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE void run(Index size, const LhsScalar* lhsData, Index lhsStride,
+                                                          RhsScalar* rhsData) {
+      mcu_small_trsv<RhsScalar, EffMode, EffOrder>(size, lhsData, lhsStride, rhsData);
+    }
+  };
+#endif
+
   static EIGEN_DEVICE_FUNC void run(const Lhs& lhs, Rhs& rhs) {
     ActualLhsType actualLhs = LhsProductTraits::extract(lhs);
 
@@ -66,11 +98,23 @@ struct triangular_solver_selector<Lhs, Rhs, Side, Mode, NoUnrolling, 1> {
 
     if (!useRhsDirectly) MappedRhs(actualRhs, rhs.size()) = rhs;
 
+#if EIGEN_MCU_SMALL_GEMM
+    constexpr bool kMcuEligible =
+        is_same<LhsScalar, RhsScalar>::value &&
+        (is_same<LhsScalar, float>::value || is_same<LhsScalar, double>::value) &&
+        !bool(LhsProductTraits::NeedToConjugate) && bool(LhsProductTraits::HasUsableDirectAccess);
+    constexpr bool kMcuAlwaysSmall =
+        kMcuEligible &&
+        (Lhs::MaxColsAtCompileTime != Dynamic && Lhs::MaxColsAtCompileTime <= EIGEN_MCU_SMALL_TRSM_THRESHOLD);
+    mcu_trsv_dispatch<kMcuAlwaysSmall, kMcuEligible>::run(actualLhs.cols(), actualLhs.data(), actualLhs.outerStride(),
+                                                          actualRhs);
+#else
     triangular_solve_vector<LhsScalar, RhsScalar, Index, Side, Mode, LhsProductTraits::NeedToConjugate,
                             (int(Lhs::Flags) & RowMajorBit) ? RowMajor : ColMajor>::run(actualLhs.cols(),
                                                                                         actualLhs.data(),
                                                                                         actualLhs.outerStride(),
                                                                                         actualRhs);
+#endif
 
     if (!useRhsDirectly) rhs = MappedRhs(actualRhs, rhs.size());
   }
@@ -82,6 +126,55 @@ struct triangular_solver_selector<Lhs, Rhs, Side, Mode, NoUnrolling, Dynamic> {
   typedef typename Rhs::Scalar Scalar;
   typedef blas_traits<Lhs> LhsProductTraits;
   typedef typename LhsProductTraits::DirectLinearAccessType ActualLhsType;
+  typedef remove_all_t<ActualLhsType> ActualLhsType_;
+
+#if EIGEN_MCU_SMALL_GEMM
+  enum {
+    LhsOrder = (int(Lhs::Flags) & RowMajorBit) ? RowMajor : ColMajor,
+    RhsRowMajor = (int(Rhs::Flags) & RowMajorBit) != 0,
+    EffSide = RhsRowMajor ? (Side == OnTheLeft ? OnTheRight : OnTheLeft) : Side,
+    EffMode = RhsRowMajor ? (((Mode & Upper) == Upper ? Lower : Upper) | (Mode & UnitDiag)) : Mode,
+    EffLhsOrder = RhsRowMajor ? (LhsOrder == RowMajor ? ColMajor : RowMajor) : LhsOrder
+  };
+
+  template <typename ActualLhsRef, bool AlwaysSmall, bool Eligible>
+  struct mcu_trsm_dispatch {
+    static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE void run(Index size, Index othersize, ActualLhsRef& actualLhs,
+                                                          Rhs& rhs) {
+      EIGEN_IF_CONSTEXPR(Eligible) {
+        if (size <= EIGEN_MCU_SMALL_TRSM_THRESHOLD) {
+          mcu_small_trsm_colmajor<Scalar, EffSide, EffMode, EffLhsOrder>(
+              size, othersize, &actualLhs.coeffRef(0, 0), actualLhs.outerStride(), &rhs.coeffRef(0, 0),
+              rhs.outerStride());
+          return;
+        }
+      }
+
+      typedef internal::gemm_blocking_space<(Rhs::Flags & RowMajorBit) ? RowMajor : ColMajor, Scalar, Scalar,
+                                            Rhs::MaxRowsAtCompileTime, Rhs::MaxColsAtCompileTime,
+                                            Lhs::MaxRowsAtCompileTime, 4>
+          BlockingType;
+
+      BlockingType blocking(rhs.rows(), rhs.cols(), size, 1, false);
+
+      triangular_solve_matrix<Scalar, Index, Side, Mode, LhsProductTraits::NeedToConjugate, LhsOrder,
+                              (Rhs::Flags & RowMajorBit) ? RowMajor : ColMajor,
+                              Rhs::InnerStrideAtCompileTime>::run(size, othersize, &actualLhs.coeffRef(0, 0),
+                                                                  actualLhs.outerStride(), &rhs.coeffRef(0, 0),
+                                                                  rhs.innerStride(), rhs.outerStride(), blocking);
+    }
+  };
+
+  template <typename ActualLhsRef>
+  struct mcu_trsm_dispatch<ActualLhsRef, true, true> {
+    static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE void run(Index size, Index othersize, ActualLhsRef& actualLhs,
+                                                          Rhs& rhs) {
+      mcu_small_trsm_colmajor<Scalar, EffSide, EffMode, EffLhsOrder>(size, othersize, &actualLhs.coeffRef(0, 0),
+                                                                     actualLhs.outerStride(), &rhs.coeffRef(0, 0),
+                                                                     rhs.outerStride());
+    }
+  };
+#endif
 
   static EIGEN_DEVICE_FUNC void run(const Lhs& lhs, Rhs& rhs) {
     add_const_on_value_type_t<ActualLhsType> actualLhs = LhsProductTraits::extract(lhs);
@@ -89,15 +182,25 @@ struct triangular_solver_selector<Lhs, Rhs, Side, Mode, NoUnrolling, Dynamic> {
     const Index size = lhs.rows();
     const Index othersize = Side == OnTheLeft ? rhs.cols() : rhs.rows();
 
-    typedef internal::gemm_blocking_space<(Rhs::Flags & RowMajorBit) ? RowMajor : ColMajor, Scalar, Scalar,
-                                          Rhs::MaxRowsAtCompileTime, Rhs::MaxColsAtCompileTime,
-                                          Lhs::MaxRowsAtCompileTime, 4>
-        BlockingType;
-
     // Nothing to solve.
     if (actualLhs.size() == 0 || rhs.size() == 0) {
       return;
     }
+
+#if EIGEN_MCU_SMALL_GEMM
+    constexpr bool kMcuEligible =
+        is_same<typename Lhs::Scalar, Scalar>::value &&
+        (is_same<Scalar, float>::value || is_same<Scalar, double>::value) && !bool(LhsProductTraits::NeedToConjugate) &&
+        (ActualLhsType_::InnerStrideAtCompileTime == 1) && (Rhs::InnerStrideAtCompileTime == 1);
+    constexpr bool kMcuAlwaysSmall =
+        kMcuEligible &&
+        (Lhs::MaxRowsAtCompileTime != Dynamic && Lhs::MaxRowsAtCompileTime <= EIGEN_MCU_SMALL_TRSM_THRESHOLD);
+    mcu_trsm_dispatch<decltype(actualLhs), kMcuAlwaysSmall, kMcuEligible>::run(size, othersize, actualLhs, rhs);
+#else
+    typedef internal::gemm_blocking_space<(Rhs::Flags & RowMajorBit) ? RowMajor : ColMajor, Scalar, Scalar,
+                                          Rhs::MaxRowsAtCompileTime, Rhs::MaxColsAtCompileTime,
+                                          Lhs::MaxRowsAtCompileTime, 4>
+        BlockingType;
 
     BlockingType blocking(rhs.rows(), rhs.cols(), size, 1, false);
 
@@ -107,6 +210,7 @@ struct triangular_solver_selector<Lhs, Rhs, Side, Mode, NoUnrolling, Dynamic> {
                             Rhs::InnerStrideAtCompileTime>::run(size, othersize, &actualLhs.coeffRef(0, 0),
                                                                 actualLhs.outerStride(), &rhs.coeffRef(0, 0),
                                                                 rhs.innerStride(), rhs.outerStride(), blocking);
+#endif
   }
 };
 

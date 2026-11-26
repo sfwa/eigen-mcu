@@ -256,6 +256,96 @@ struct general_product_to_triangular_selector<MatrixType, ProductType, UpLo, tru
 
 template <typename MatrixType, typename ProductType, int UpLo>
 struct general_product_to_triangular_selector<MatrixType, ProductType, UpLo, false> {
+#if EIGEN_MCU_SMALL_GEMM
+  template <typename ActualLhsRef, typename ActualRhsRef, bool AlwaysSmall, bool Eligible>
+  struct mcu_trprod_dispatch {
+    typedef internal::remove_all_t<typename ProductType::LhsNested> Lhs;
+    typedef internal::blas_traits<Lhs> LhsBlasTraits;
+    typedef internal::remove_all_t<typename LhsBlasTraits::DirectLinearAccessType> ActualLhs_;
+    typedef internal::remove_all_t<typename ProductType::RhsNested> Rhs;
+    typedef internal::blas_traits<Rhs> RhsBlasTraits;
+    typedef internal::remove_all_t<typename RhsBlasTraits::DirectLinearAccessType> ActualRhs_;
+    typedef typename ProductType::Scalar Scalar;
+    enum {
+      IsRowMajor = (internal::traits<MatrixType>::Flags & RowMajorBit) ? 1 : 0,
+      LhsIsRowMajor = ActualLhs_::Flags & RowMajorBit ? 1 : 0,
+      RhsIsRowMajor = ActualRhs_::Flags & RowMajorBit ? 1 : 0,
+      SkipDiag = (UpLo & (UnitDiag | ZeroDiag)) != 0
+    };
+    static EIGEN_STRONG_INLINE void run(MatrixType& mat, ActualLhsRef& actualLhs, ActualRhsRef& actualRhs,
+                                        const Scalar& actualAlpha) {
+      Index size = mat.cols();
+      if (SkipDiag) size--;
+      if (size <= 0) return;
+      const Index depth = actualLhs.cols();
+      const auto* lhs_ptr = &actualLhs.coeffRef(SkipDiag && (UpLo & Lower) == Lower ? 1 : 0, 0);
+      const auto* rhs_ptr = &actualRhs.coeffRef(0, SkipDiag && (UpLo & Upper) == Upper ? 1 : 0);
+      auto* dst_ptr =
+          mat.data() +
+          (SkipDiag ? (bool(IsRowMajor) != ((UpLo & Lower) == Lower) ? mat.innerStride() : mat.outerStride()) : 0);
+
+      EIGEN_IF_CONSTEXPR(Eligible) {
+        if (size <= EIGEN_MCU_SMALL_GEMM_THRESHOLD && depth <= EIGEN_MCU_SMALL_GEMM_MAX_DEPTH) {
+          internal::mcu_small_gemm_triangular<Scalar, LhsIsRowMajor ? RowMajor : ColMajor,
+                                              RhsIsRowMajor ? RowMajor : ColMajor, IsRowMajor ? RowMajor : ColMajor,
+                                              UpLo&(Lower | Upper)>(size, depth, lhs_ptr, actualLhs.outerStride(),
+                                                                    rhs_ptr, actualRhs.outerStride(), dst_ptr,
+                                                                    mat.outerStride(), actualAlpha);
+          return;
+        }
+      }
+
+      typedef internal::gemm_blocking_space<IsRowMajor ? RowMajor : ColMajor, typename Lhs::Scalar,
+                                            typename Rhs::Scalar, MatrixType::MaxColsAtCompileTime,
+                                            MatrixType::MaxColsAtCompileTime, ActualLhs_::MaxColsAtCompileTime>
+          BlockingType;
+
+      BlockingType blocking(size, size, depth, 1, false);
+
+      internal::general_matrix_matrix_triangular_product<
+          Index, typename Lhs::Scalar, LhsIsRowMajor ? RowMajor : ColMajor, LhsBlasTraits::NeedToConjugate,
+          typename Rhs::Scalar, RhsIsRowMajor ? RowMajor : ColMajor, RhsBlasTraits::NeedToConjugate,
+          IsRowMajor ? RowMajor : ColMajor, MatrixType::InnerStrideAtCompileTime,
+          UpLo&(Lower | Upper)>::run(size, depth, lhs_ptr, actualLhs.outerStride(), rhs_ptr, actualRhs.outerStride(),
+                                     dst_ptr, mat.innerStride(), mat.outerStride(), actualAlpha, blocking);
+    }
+  };
+
+  template <typename ActualLhsRef, typename ActualRhsRef>
+  struct mcu_trprod_dispatch<ActualLhsRef, ActualRhsRef, true, true> {
+    typedef internal::remove_all_t<typename ProductType::LhsNested> Lhs;
+    typedef internal::blas_traits<Lhs> LhsBlasTraits;
+    typedef internal::remove_all_t<typename LhsBlasTraits::DirectLinearAccessType> ActualLhs_;
+    typedef internal::remove_all_t<typename ProductType::RhsNested> Rhs;
+    typedef internal::blas_traits<Rhs> RhsBlasTraits;
+    typedef internal::remove_all_t<typename RhsBlasTraits::DirectLinearAccessType> ActualRhs_;
+    typedef typename ProductType::Scalar Scalar;
+    enum {
+      IsRowMajor = (internal::traits<MatrixType>::Flags & RowMajorBit) ? 1 : 0,
+      LhsIsRowMajor = ActualLhs_::Flags & RowMajorBit ? 1 : 0,
+      RhsIsRowMajor = ActualRhs_::Flags & RowMajorBit ? 1 : 0,
+      SkipDiag = (UpLo & (UnitDiag | ZeroDiag)) != 0
+    };
+    static EIGEN_STRONG_INLINE void run(MatrixType& mat, ActualLhsRef& actualLhs, ActualRhsRef& actualRhs,
+                                        const Scalar& actualAlpha) {
+      Index size = mat.cols();
+      if (SkipDiag) size--;
+      if (size <= 0) return;
+      const Index depth = actualLhs.cols();
+      const auto* lhs_ptr = &actualLhs.coeffRef(SkipDiag && (UpLo & Lower) == Lower ? 1 : 0, 0);
+      const auto* rhs_ptr = &actualRhs.coeffRef(0, SkipDiag && (UpLo & Upper) == Upper ? 1 : 0);
+      auto* dst_ptr =
+          mat.data() +
+          (SkipDiag ? (bool(IsRowMajor) != ((UpLo & Lower) == Lower) ? mat.innerStride() : mat.outerStride()) : 0);
+      internal::mcu_small_gemm_triangular<Scalar, LhsIsRowMajor ? RowMajor : ColMajor,
+                                          RhsIsRowMajor ? RowMajor : ColMajor, IsRowMajor ? RowMajor : ColMajor,
+                                          UpLo&(Lower | Upper)>(size, depth, lhs_ptr, actualLhs.outerStride(), rhs_ptr,
+                                                                actualRhs.outerStride(), dst_ptr, mat.outerStride(),
+                                                                actualAlpha);
+    }
+  };
+#endif
+
   static void run(MatrixType& mat, const ProductType& prod, const typename MatrixType::Scalar& alpha, bool beta) {
     typedef internal::remove_all_t<typename ProductType::LhsNested> Lhs;
     typedef internal::blas_traits<Lhs> LhsBlasTraits;
@@ -274,6 +364,27 @@ struct general_product_to_triangular_selector<MatrixType, ProductType, UpLo, fal
 
     if (!beta) mat.template triangularView<UpLo>().setZero();
 
+#if EIGEN_MCU_SMALL_GEMM
+    typedef typename ProductType::Scalar Scalar;
+    constexpr int kUpLoClean = UpLo & (Lower | Upper);
+    constexpr bool kMcuEligible =
+        internal::is_same<typename Lhs::Scalar, Scalar>::value &&
+        internal::is_same<typename Rhs::Scalar, Scalar>::value &&
+        internal::is_same<typename MatrixType::Scalar, Scalar>::value &&
+        (internal::is_same<Scalar, float>::value || internal::is_same<Scalar, double>::value) &&
+        !bool(LhsBlasTraits::NeedToConjugate) && !bool(RhsBlasTraits::NeedToConjugate) &&
+        (ActualLhs_::InnerStrideAtCompileTime == 1) && (ActualRhs_::InnerStrideAtCompileTime == 1) &&
+        (MatrixType::InnerStrideAtCompileTime == 1) && bool(internal::traits<MatrixType>::Flags & DirectAccessBit) &&
+        (kUpLoClean == Lower || kUpLoClean == Upper);
+    constexpr bool kMcuAlwaysSmall =
+        kMcuEligible &&
+        (MatrixType::MaxColsAtCompileTime != Dynamic &&
+         MatrixType::MaxColsAtCompileTime <= EIGEN_MCU_SMALL_GEMM_THRESHOLD) &&
+        (ActualLhs_::MaxColsAtCompileTime != Dynamic &&
+         ActualLhs_::MaxColsAtCompileTime <= EIGEN_MCU_SMALL_GEMM_MAX_DEPTH);
+    mcu_trprod_dispatch<decltype(actualLhs), decltype(actualRhs), kMcuAlwaysSmall, kMcuEligible>::run(
+        mat, actualLhs, actualRhs, actualAlpha);
+#else
     enum {
       IsRowMajor = (internal::traits<MatrixType>::Flags & RowMajorBit) ? 1 : 0,
       LhsIsRowMajor = ActualLhs_::Flags & RowMajorBit ? 1 : 0,
@@ -305,6 +416,7 @@ struct general_product_to_triangular_selector<MatrixType, ProductType, UpLo, fal
                                                                                                   : mat.outerStride())
                                                  : 0),
                                    mat.innerStride(), mat.outerStride(), actualAlpha, blocking);
+#endif
   }
 };
 

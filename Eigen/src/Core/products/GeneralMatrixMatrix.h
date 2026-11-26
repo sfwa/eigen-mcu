@@ -409,6 +409,60 @@ struct generic_product_impl<Lhs, Rhs, DenseShape, DenseShape, GemmProduct>
       scaleAndAddTo(dst, lhs, rhs, Scalar(-1));
   }
 
+#if EIGEN_MCU_SMALL_GEMM
+  template <typename Dest, bool AlwaysSmall, bool Eligible>
+  struct mcu_gemm_dispatch {
+    static EIGEN_STRONG_INLINE void run(Dest& dst, const Lhs& a_lhs, const Rhs& a_rhs,
+                                        add_const_on_value_type_t<ActualLhsType>& lhs,
+                                        add_const_on_value_type_t<ActualRhsType>& rhs, const Scalar& actualAlpha) {
+      EIGEN_IF_CONSTEXPR(Eligible) {
+        if (dst.rows() <= EIGEN_MCU_SMALL_GEMM_THRESHOLD && dst.cols() <= EIGEN_MCU_SMALL_GEMM_THRESHOLD &&
+            lhs.cols() <= EIGEN_MCU_SMALL_GEMM_MAX_DEPTH) {
+          mcu_small_gemm<Scalar, (ActualLhsTypeCleaned::Flags & RowMajorBit) ? RowMajor : ColMajor,
+                         (ActualRhsTypeCleaned::Flags & RowMajorBit) ? RowMajor : ColMajor,
+                         (Dest::Flags & RowMajorBit) ? RowMajor : ColMajor>(
+              dst.rows(), dst.cols(), lhs.cols(), lhs.data(), lhs.outerStride(), rhs.data(), rhs.outerStride(),
+              dst.data(), dst.outerStride(), actualAlpha);
+          return;
+        }
+      }
+
+      typedef internal::gemm_blocking_space<(Dest::Flags & RowMajorBit) ? RowMajor : ColMajor, LhsScalar, RhsScalar,
+                                            Dest::MaxRowsAtCompileTime, Dest::MaxColsAtCompileTime,
+                                            MaxDepthAtCompileTime>
+          BlockingType;
+
+      typedef internal::gemm_functor<
+          Scalar, Index,
+          internal::general_matrix_matrix_product<
+              Index, LhsScalar, (ActualLhsTypeCleaned::Flags & RowMajorBit) ? RowMajor : ColMajor,
+              bool(LhsBlasTraits::NeedToConjugate), RhsScalar,
+              (ActualRhsTypeCleaned::Flags & RowMajorBit) ? RowMajor : ColMajor, bool(RhsBlasTraits::NeedToConjugate),
+              (Dest::Flags & RowMajorBit) ? RowMajor : ColMajor, Dest::InnerStrideAtCompileTime>,
+          ActualLhsTypeCleaned, ActualRhsTypeCleaned, Dest, BlockingType>
+          GemmFunctor;
+
+      BlockingType blocking(dst.rows(), dst.cols(), lhs.cols(), 1, true);
+      internal::parallelize_gemm<(Dest::MaxRowsAtCompileTime > 32 || Dest::MaxRowsAtCompileTime == Dynamic)>(
+          GemmFunctor(lhs, rhs, dst, actualAlpha, blocking), a_lhs.rows(), a_rhs.cols(), a_lhs.cols(),
+          Dest::Flags & RowMajorBit);
+    }
+  };
+
+  template <typename Dest>
+  struct mcu_gemm_dispatch<Dest, true, true> {
+    static EIGEN_STRONG_INLINE void run(Dest& dst, const Lhs&, const Rhs&,
+                                        add_const_on_value_type_t<ActualLhsType>& lhs,
+                                        add_const_on_value_type_t<ActualRhsType>& rhs, const Scalar& actualAlpha) {
+      mcu_small_gemm<Scalar, (ActualLhsTypeCleaned::Flags & RowMajorBit) ? RowMajor : ColMajor,
+                     (ActualRhsTypeCleaned::Flags & RowMajorBit) ? RowMajor : ColMajor,
+                     (Dest::Flags & RowMajorBit) ? RowMajor : ColMajor>(
+          dst.rows(), dst.cols(), lhs.cols(), lhs.data(), lhs.outerStride(), rhs.data(), rhs.outerStride(),
+          dst.data(), dst.outerStride(), actualAlpha);
+    }
+  };
+#endif
+
   template <typename Dest>
   static void scaleAndAddTo(Dest& dst, const Lhs& a_lhs, const Rhs& a_rhs, const Scalar& alpha) {
     eigen_assert(dst.rows() == a_lhs.rows() && dst.cols() == a_rhs.cols());
@@ -431,6 +485,21 @@ struct generic_product_impl<Lhs, Rhs, DenseShape, DenseShape, GemmProduct>
 
     Scalar actualAlpha = combine_scalar_factors(alpha, a_lhs, a_rhs);
 
+#if EIGEN_MCU_SMALL_GEMM
+    constexpr bool kMcuEligible =
+        is_same<LhsScalar, Scalar>::value && is_same<RhsScalar, Scalar>::value &&
+        is_same<typename Dest::Scalar, Scalar>::value &&
+        (is_same<Scalar, float>::value || is_same<Scalar, double>::value) && !bool(LhsBlasTraits::NeedToConjugate) &&
+        !bool(RhsBlasTraits::NeedToConjugate) && (ActualLhsTypeCleaned::InnerStrideAtCompileTime == 1) &&
+        (ActualRhsTypeCleaned::InnerStrideAtCompileTime == 1) && (Dest::InnerStrideAtCompileTime == 1) &&
+        bool(Dest::Flags & DirectAccessBit);
+    constexpr bool kMcuAlwaysSmall =
+        kMcuEligible &&
+        (Dest::MaxRowsAtCompileTime != Dynamic && Dest::MaxRowsAtCompileTime <= EIGEN_MCU_SMALL_GEMM_THRESHOLD) &&
+        (Dest::MaxColsAtCompileTime != Dynamic && Dest::MaxColsAtCompileTime <= EIGEN_MCU_SMALL_GEMM_THRESHOLD) &&
+        (MaxDepthAtCompileTime != Dynamic && MaxDepthAtCompileTime <= EIGEN_MCU_SMALL_GEMM_MAX_DEPTH);
+    mcu_gemm_dispatch<Dest, kMcuAlwaysSmall, kMcuEligible>::run(dst, a_lhs, a_rhs, lhs, rhs, actualAlpha);
+#else
     typedef internal::gemm_blocking_space<(Dest::Flags & RowMajorBit) ? RowMajor : ColMajor, LhsScalar, RhsScalar,
                                           Dest::MaxRowsAtCompileTime, Dest::MaxColsAtCompileTime, MaxDepthAtCompileTime>
         BlockingType;
@@ -449,6 +518,7 @@ struct generic_product_impl<Lhs, Rhs, DenseShape, DenseShape, GemmProduct>
     internal::parallelize_gemm<(Dest::MaxRowsAtCompileTime > 32 || Dest::MaxRowsAtCompileTime == Dynamic)>(
         GemmFunctor(lhs, rhs, dst, actualAlpha, blocking), a_lhs.rows(), a_rhs.cols(), a_lhs.cols(),
         Dest::Flags & RowMajorBit);
+#endif
   }
 };
 
