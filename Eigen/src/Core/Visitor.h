@@ -463,14 +463,157 @@ struct functor_traits<count_visitor<Scalar>> {
   };
 };
 
-template <typename Derived, bool AlwaysTrue = NumTraits<typename traits<Derived>::Scalar>::IsInteger>
+template <typename Scalar>
+struct mcu_ieee_finite_helper {
+  static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE bool all_finite(const Scalar*, Index) { return true; }
+  static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE bool has_nan(const Scalar*, Index) { return false; }
+};
+
+template <>
+struct mcu_ieee_finite_helper<float> {
+  static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE bool all_finite(const float* data, Index n) {
+    constexpr std::uint32_t kExpMask = 0x7F800000u;
+    constexpr std::uint32_t kExpLsb = 0x00800000u;
+    constexpr std::uint32_t kSignBit = 0x80000000u;
+    std::uint32_t acc = 0;
+    Index i = 0;
+    for (; i + 4 <= n; i += 4) {
+      std::uint32_t u0, u1, u2, u3;
+      std::memcpy(&u0, data + i + 0, sizeof(u0));
+      std::memcpy(&u1, data + i + 1, sizeof(u1));
+      std::memcpy(&u2, data + i + 2, sizeof(u2));
+      std::memcpy(&u3, data + i + 3, sizeof(u3));
+      acc |= ((u0 & kExpMask) + kExpLsb) | ((u1 & kExpMask) + kExpLsb) |
+             ((u2 & kExpMask) + kExpLsb) | ((u3 & kExpMask) + kExpLsb);
+    }
+    for (; i < n; ++i) {
+      std::uint32_t u;
+      std::memcpy(&u, data + i, sizeof(u));
+      acc |= (u & kExpMask) + kExpLsb;
+    }
+    return (acc & kSignBit) == 0;
+  }
+
+  static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE bool has_nan(const float* data, Index n) {
+    constexpr std::uint32_t kAbsMask = 0x7FFFFFFFu;
+    constexpr std::uint32_t kInfBits = 0x7F800000u;
+    Index i = 0;
+    for (; i + 4 <= n; i += 4) {
+      std::uint32_t u0, u1, u2, u3;
+      std::memcpy(&u0, data + i + 0, sizeof(u0));
+      std::memcpy(&u1, data + i + 1, sizeof(u1));
+      std::memcpy(&u2, data + i + 2, sizeof(u2));
+      std::memcpy(&u3, data + i + 3, sizeof(u3));
+      if (((u0 & kAbsMask) > kInfBits) || ((u1 & kAbsMask) > kInfBits) ||
+          ((u2 & kAbsMask) > kInfBits) || ((u3 & kAbsMask) > kInfBits)) {
+        return true;
+      }
+    }
+    for (; i < n; ++i) {
+      std::uint32_t u;
+      std::memcpy(&u, data + i, sizeof(u));
+      if ((u & kAbsMask) > kInfBits) return true;
+    }
+    return false;
+  }
+};
+
+template <>
+struct mcu_ieee_finite_helper<double> {
+  static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE bool all_finite(const double* data, Index n) {
+    constexpr std::uint64_t kExpMask = 0x7FF0000000000000ULL;
+    constexpr std::uint64_t kExpLsb = 0x0010000000000000ULL;
+    constexpr std::uint64_t kSignBit = 0x8000000000000000ULL;
+    std::uint64_t acc = 0;
+    Index i = 0;
+    for (; i + 4 <= n; i += 4) {
+      std::uint64_t u0, u1, u2, u3;
+      std::memcpy(&u0, data + i + 0, sizeof(u0));
+      std::memcpy(&u1, data + i + 1, sizeof(u1));
+      std::memcpy(&u2, data + i + 2, sizeof(u2));
+      std::memcpy(&u3, data + i + 3, sizeof(u3));
+      acc |= ((u0 & kExpMask) + kExpLsb) | ((u1 & kExpMask) + kExpLsb) |
+             ((u2 & kExpMask) + kExpLsb) | ((u3 & kExpMask) + kExpLsb);
+    }
+    for (; i < n; ++i) {
+      std::uint64_t u;
+      std::memcpy(&u, data + i, sizeof(u));
+      acc |= (u & kExpMask) + kExpLsb;
+    }
+    return (acc & kSignBit) == 0;
+  }
+
+  static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE bool has_nan(const double* data, Index n) {
+    constexpr std::uint64_t kAbsMask = 0x7FFFFFFFFFFFFFFFULL;
+    constexpr std::uint64_t kInfBits = 0x7FF0000000000000ULL;
+    Index i = 0;
+    for (; i + 4 <= n; i += 4) {
+      std::uint64_t u0, u1, u2, u3;
+      std::memcpy(&u0, data + i + 0, sizeof(u0));
+      std::memcpy(&u1, data + i + 1, sizeof(u1));
+      std::memcpy(&u2, data + i + 2, sizeof(u2));
+      std::memcpy(&u3, data + i + 3, sizeof(u3));
+      if (((u0 & kAbsMask) > kInfBits) || ((u1 & kAbsMask) > kInfBits) ||
+          ((u2 & kAbsMask) > kInfBits) || ((u3 & kAbsMask) > kInfBits)) {
+        return true;
+      }
+    }
+    for (; i < n; ++i) {
+      std::uint64_t u;
+      std::memcpy(&u, data + i, sizeof(u));
+      if ((u & kAbsMask) > kInfBits) return true;
+    }
+    return false;
+  }
+};
+
+template <typename Derived>
+struct mcu_contiguous_ieee_fp {
+  using Scalar = typename traits<Derived>::Scalar;
+  static constexpr bool value =
+      ((is_same<Scalar, float>::value && sizeof(float) == 4) ||
+       (is_same<Scalar, double>::value && sizeof(double) == 8)) &&
+      std::numeric_limits<Scalar>::is_iec559 && bool(traits<Derived>::Flags & DirectAccessBit) &&
+      bool(evaluator<Derived>::Flags & LinearAccessBit) && (Derived::InnerStrideAtCompileTime == 1) &&
+      ((packet_traits<Scalar>::size == 1) ||
+       (Derived::MaxSizeAtCompileTime != Dynamic && Derived::MaxSizeAtCompileTime <= 256));
+};
+
+template <typename Derived, bool AlwaysTrue = NumTraits<typename traits<Derived>::Scalar>::IsInteger,
+          bool ContiguousIeee = mcu_contiguous_ieee_fp<Derived>::value>
 struct all_finite_impl {
   static EIGEN_DEVICE_FUNC inline bool run(const Derived& /*derived*/) { return true; }
 };
 #if !defined(__FINITE_MATH_ONLY__) || !(__FINITE_MATH_ONLY__)
 template <typename Derived>
-struct all_finite_impl<Derived, false> {
+struct all_finite_impl<Derived, false, false> {
   static EIGEN_DEVICE_FUNC inline bool run(const Derived& derived) { return derived.array().isFiniteTyped().all(); }
+};
+template <typename Derived>
+struct all_finite_impl<Derived, false, true> {
+  static EIGEN_DEVICE_FUNC inline bool run(const Derived& derived) {
+    return mcu_ieee_finite_helper<typename traits<Derived>::Scalar>::all_finite(derived.data(), derived.size());
+  }
+};
+#endif
+
+template <typename Derived, bool AlwaysFalse = NumTraits<typename traits<Derived>::Scalar>::IsInteger,
+          bool ContiguousIeee = mcu_contiguous_ieee_fp<Derived>::value>
+struct has_nan_impl {
+  static EIGEN_DEVICE_FUNC inline bool run(const Derived& /*derived*/) { return false; }
+};
+#if !defined(__FINITE_MATH_ONLY__) || !(__FINITE_MATH_ONLY__)
+template <typename Derived>
+struct has_nan_impl<Derived, false, false> {
+  static EIGEN_DEVICE_FUNC inline bool run(const Derived& derived) {
+    return derived.cwiseTypedNotEqual(derived).any();
+  }
+};
+template <typename Derived>
+struct has_nan_impl<Derived, false, true> {
+  static EIGEN_DEVICE_FUNC inline bool run(const Derived& derived) {
+    return mcu_ieee_finite_helper<typename traits<Derived>::Scalar>::has_nan(derived.data(), derived.size());
+  }
 };
 #endif
 
@@ -520,7 +663,7 @@ EIGEN_DEVICE_FUNC Index DenseBase<Derived>::count() const {
 
 template <typename Derived>
 EIGEN_DEVICE_FUNC inline bool DenseBase<Derived>::hasNaN() const {
-  return derived().cwiseTypedNotEqual(derived()).any();
+  return internal::has_nan_impl<Derived>::run(derived());
 }
 
 /** \returns true if \c *this contains only finite numbers, i.e., no NaN and no +/-INF values.

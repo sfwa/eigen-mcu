@@ -78,13 +78,13 @@ struct inner_product_evaluator {
     inner_product_assert<Lhs, Rhs>::run(lhs, rhs);
   }
 
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE Index size() const { return m_size.value(); }
+  EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE Index size() const { return m_size.value(); }
 
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE Scalar coeff(Index index) const {
+  EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE Scalar coeff(Index index) const {
     return m_func.coeff(m_lhs.coeff(index), m_rhs.coeff(index));
   }
 
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE Scalar coeff(const Scalar& value, Index index) const {
+  EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE Scalar coeff(const Scalar& value, Index index) const {
     return m_func.coeff(value, m_lhs.coeff(index), m_rhs.coeff(index));
   }
 
@@ -106,6 +106,90 @@ struct inner_product_evaluator {
   const variable_if_dynamic<Index, SizeAtCompileTime> m_size;
 };
 
+template <typename Evaluator, int Start, int Len>
+struct scalar_inner_product_unroller {
+  using Scalar = typename Evaluator::Scalar;
+  static EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE Scalar run(const Evaluator& eval) {
+    constexpr int Half = Len / 2;
+    return padd(scalar_inner_product_unroller<Evaluator, Start, Half>::run(eval),
+                scalar_inner_product_unroller<Evaluator, Start + Half, Len - Half>::run(eval));
+  }
+};
+
+template <typename Evaluator, int Start>
+struct scalar_inner_product_unroller<Evaluator, Start, 1> {
+  using Scalar = typename Evaluator::Scalar;
+  static EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE Scalar run(const Evaluator& eval) { return eval.coeff(Start); }
+};
+
+template <typename Evaluator, int Start>
+struct scalar_inner_product_unroller<Evaluator, Start, 2> {
+  using Scalar = typename Evaluator::Scalar;
+  static EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE Scalar run(const Evaluator& eval) {
+    return eval.coeff(eval.coeff(Start), Start + 1);
+  }
+};
+
+template <typename Evaluator, int Start>
+struct scalar_inner_product_unroller<Evaluator, Start, 3> {
+  using Scalar = typename Evaluator::Scalar;
+  static EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE Scalar run(const Evaluator& eval) {
+    return eval.coeff(eval.coeff(eval.coeff(Start), Start + 1), Start + 2);
+  }
+};
+
+template <typename Evaluator, int Start>
+struct scalar_inner_product_unroller<Evaluator, Start, 4> {
+  using Scalar = typename Evaluator::Scalar;
+  static EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE Scalar run(const Evaluator& eval) {
+    Scalar s0 = eval.coeff(eval.coeff(Start), Start + 1);
+    Scalar s1 = eval.coeff(eval.coeff(Start + 2), Start + 3);
+    return padd(s0, s1);
+  }
+};
+
+template <typename Evaluator, int CompileSize,
+          bool Unroll = (CompileSize != Dynamic && CompileSize > 0 && CompileSize * 4 <= EIGEN_UNROLLING_LIMIT)>
+struct scalar_inner_product_selector {
+  using Scalar = typename Evaluator::Scalar;
+  static EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE Scalar run(const Evaluator& eval) {
+    const Index size = eval.size();
+    if (size == 0) return Scalar(0);
+    if (size >= 8) {
+      // Four independent accumulators hide FMA latency on scalar Cortex-M4F/M7 pipelines.
+      Scalar s0 = eval.coeff(0);
+      Scalar s1 = eval.coeff(1);
+      Scalar s2 = eval.coeff(2);
+      Scalar s3 = eval.coeff(3);
+      Index k = 4;
+      for (; k + 4 <= size; k += 4) {
+        s0 = eval.coeff(s0, k + 0);
+        s1 = eval.coeff(s1, k + 1);
+        s2 = eval.coeff(s2, k + 2);
+        s3 = eval.coeff(s3, k + 3);
+      }
+      Scalar result = padd(padd(s0, s1), padd(s2, s3));
+      for (; k < size; ++k) {
+        result = eval.coeff(result, k);
+      }
+      return result;
+    }
+    Scalar result = eval.coeff(0);
+    for (Index k = 1; k < size; ++k) {
+      result = eval.coeff(result, k);
+    }
+    return result;
+  }
+};
+
+template <typename Evaluator, int CompileSize>
+struct scalar_inner_product_selector<Evaluator, CompileSize, true> {
+  using Scalar = typename Evaluator::Scalar;
+  static EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE Scalar run(const Evaluator& eval) {
+    return scalar_inner_product_unroller<Evaluator, 0, CompileSize>::run(eval);
+  }
+};
+
 template <typename Evaluator, bool Vectorize = Evaluator::Vectorize>
 struct inner_product_impl;
 
@@ -113,16 +197,8 @@ struct inner_product_impl;
 template <typename Evaluator>
 struct inner_product_impl<Evaluator, false> {
   using Scalar = typename Evaluator::Scalar;
-  static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE Scalar run(const Evaluator& eval) {
-    const Index size = eval.size();
-    if (size == 0) return Scalar(0);
-
-    Scalar result = eval.coeff(0);
-    for (Index k = 1; k < size; k++) {
-      result = eval.coeff(result, k);
-    }
-
-    return result;
+  static EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE Scalar run(const Evaluator& eval) {
+    return scalar_inner_product_selector<Evaluator, Evaluator::SizeAtCompileTime>::run(eval);
   }
 };
 
@@ -133,7 +209,7 @@ struct inner_product_impl<Evaluator, true> {
   using Scalar = typename Evaluator::Scalar;
   using Packet = typename Evaluator::Packet;
   static constexpr int PacketSize = unpacket_traits<Packet>::size;
-  static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE Scalar run(const Evaluator& eval) {
+  static EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE Scalar run(const Evaluator& eval) {
     const UnsignedIndex size = static_cast<UnsignedIndex>(eval.size());
     if (size < PacketSize) return inner_product_impl<Evaluator, false>::run(eval);
 
@@ -245,7 +321,7 @@ struct default_inner_product_impl {
   using Op = scalar_inner_product_op<LhsScalar, RhsScalar, Conj>;
   using Evaluator = inner_product_evaluator<Op, Lhs, Rhs>;
   using result_type = typename Evaluator::Scalar;
-  static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE result_type run(const MatrixBase<Lhs>& a, const MatrixBase<Rhs>& b) {
+  static EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE result_type run(const MatrixBase<Lhs>& a, const MatrixBase<Rhs>& b) {
     Evaluator eval(a.derived(), b.derived(), Op());
     return inner_product_impl<Evaluator>::run(eval);
   }

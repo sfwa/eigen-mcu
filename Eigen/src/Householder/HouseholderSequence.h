@@ -324,37 +324,51 @@ class HouseholderSequence : public EigenBase<HouseholderSequence<VectorsType, Co
     applyThisOnTheLeft(dst, workspace, inputIsIdentity);
   }
 
+  template <typename Dest, bool AllowBlock>
+  struct apply_block_helper {
+    static inline bool run(const HouseholderSequence& self, Dest& dst, bool inputIsIdentity) {
+      if (self.m_length < BlockSize || dst.cols() <= 1) return false;
+      // Make sure we have at least 2 useful blocks, otherwise it is point-less:
+      Index blockSize = self.m_length < Index(2 * BlockSize) ? (self.m_length + 1) / 2 : Index(BlockSize);
+      for (Index i = 0; i < self.m_length; i += blockSize) {
+        Index end = self.m_reverse ? (std::min)(self.m_length, i + blockSize) : self.m_length - i;
+        Index k = self.m_reverse ? i : (std::max)(Index(0), end - blockSize);
+        Index bs = end - k;
+        Index start = k + self.m_shift;
+
+        typedef Block<internal::remove_all_t<VectorsType>, Dynamic, Dynamic> SubVectorsType;
+        SubVectorsType sub_vecs1(self.m_vectors.const_cast_derived(), Side == OnTheRight ? k : start,
+                                 Side == OnTheRight ? start : k, Side == OnTheRight ? bs : self.m_vectors.rows() - start,
+                                 Side == OnTheRight ? self.m_vectors.cols() - start : bs);
+        std::conditional_t<Side == OnTheRight, Transpose<SubVectorsType>, SubVectorsType&> sub_vecs(sub_vecs1);
+
+        Index dstRows = self.rows() - self.m_shift - k;
+
+        if (inputIsIdentity) {
+          Block<Dest, Dynamic, Dynamic> sub_dst = dst.bottomRightCorner(dstRows, dstRows);
+          apply_block_householder_on_the_left(sub_dst, sub_vecs, self.m_coeffs.segment(k, bs), !self.m_reverse);
+        } else {
+          auto sub_dst = dst.bottomRows(dstRows);
+          apply_block_householder_on_the_left(sub_dst, sub_vecs, self.m_coeffs.segment(k, bs), !self.m_reverse);
+        }
+      }
+      return true;
+    }
+  };
+
+  template <typename Dest>
+  struct apply_block_helper<Dest, false> {
+    static inline bool run(const HouseholderSequence&, Dest&, bool) { return false; }
+  };
+
   /** \internal */
   template <typename Dest, typename Workspace>
   inline void applyThisOnTheLeft(Dest& dst, Workspace& workspace, bool inputIsIdentity = false) const {
     if (inputIsIdentity && m_reverse) inputIsIdentity = false;
-    // if the entries are large enough, then apply the reflectors by block
-    if (m_length >= BlockSize && dst.cols() > 1) {
-      // Make sure we have at least 2 useful blocks, otherwise it is point-less:
-      Index blockSize = m_length < Index(2 * BlockSize) ? (m_length + 1) / 2 : Index(BlockSize);
-      for (Index i = 0; i < m_length; i += blockSize) {
-        Index end = m_reverse ? (std::min)(m_length, i + blockSize) : m_length - i;
-        Index k = m_reverse ? i : (std::max)(Index(0), end - blockSize);
-        Index bs = end - k;
-        Index start = k + m_shift;
-
-        typedef Block<internal::remove_all_t<VectorsType>, Dynamic, Dynamic> SubVectorsType;
-        SubVectorsType sub_vecs1(m_vectors.const_cast_derived(), Side == OnTheRight ? k : start,
-                                 Side == OnTheRight ? start : k, Side == OnTheRight ? bs : m_vectors.rows() - start,
-                                 Side == OnTheRight ? m_vectors.cols() - start : bs);
-        std::conditional_t<Side == OnTheRight, Transpose<SubVectorsType>, SubVectorsType&> sub_vecs(sub_vecs1);
-
-        Index dstRows = rows() - m_shift - k;
-
-        if (inputIsIdentity) {
-          Block<Dest, Dynamic, Dynamic> sub_dst = dst.bottomRightCorner(dstRows, dstRows);
-          apply_block_householder_on_the_left(sub_dst, sub_vecs, m_coeffs.segment(k, bs), !m_reverse);
-        } else {
-          auto sub_dst = dst.bottomRows(dstRows);
-          apply_block_householder_on_the_left(sub_dst, sub_vecs, m_coeffs.segment(k, bs), !m_reverse);
-        }
-      }
-    } else {
+    // Skip block Householder instantiation when matrix dimensions are known at compile time to stay below BlockSize.
+    constexpr bool kAllowBlock = (int(MaxRowsAtCompileTime) == Dynamic || int(MaxRowsAtCompileTime) >= int(BlockSize)) &&
+                                 (int(Dest::MaxColsAtCompileTime) == Dynamic || int(Dest::MaxColsAtCompileTime) > 1);
+    if (!apply_block_helper<Dest, kAllowBlock>::run(*this, dst, inputIsIdentity)) {
       workspace.resize(dst.cols());
       for (Index k = 0; k < m_length; ++k) {
         Index actual_k = m_reverse ? k : m_length - k - 1;

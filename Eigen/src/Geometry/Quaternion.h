@@ -178,9 +178,9 @@ class QuaternionBase : public RotationBase<Derived, 3> {
   EIGEN_DEVICE_FUNC Derived& setFromTwoVectors(const MatrixBase<Derived1>& a, const MatrixBase<Derived2>& b);
 
   template <class OtherDerived>
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE Quaternion<Scalar> operator*(const QuaternionBase<OtherDerived>& q) const;
+  EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE Quaternion<Scalar> operator*(const QuaternionBase<OtherDerived>& q) const;
   template <class OtherDerived>
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE Derived& operator*=(const QuaternionBase<OtherDerived>& q);
+  EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE Derived& operator*=(const QuaternionBase<OtherDerived>& q);
 
   /** \returns the quaternion describing the inverse rotation */
   EIGEN_DEVICE_FUNC Quaternion<Scalar> inverse() const;
@@ -220,7 +220,7 @@ class QuaternionBase : public RotationBase<Derived, 3> {
   }
 
   /** return the result vector of \a v through the rotation*/
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE Vector3 _transformVector(const Vector3& v) const;
+  EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE Vector3 _transformVector(const Vector3& v) const;
 
 #ifdef EIGEN_PARSED_BY_DOXYGEN
   /** \returns \c *this with scalar type casted to \a NewScalarType
@@ -545,7 +545,7 @@ typedef Map<Quaternion<double>, Aligned> QuaternionMapAlignedd;
 namespace internal {
 template <int Arch, class Derived1, class Derived2, typename Scalar>
 struct quat_product {
-  EIGEN_DEVICE_FUNC static EIGEN_STRONG_INLINE Quaternion<Scalar> run(const QuaternionBase<Derived1>& a,
+  EIGEN_DEVICE_FUNC static EIGEN_ALWAYS_INLINE Quaternion<Scalar> run(const QuaternionBase<Derived1>& a,
                                                                       const QuaternionBase<Derived2>& b) {
     return Quaternion<Scalar>(a.w() * b.w() - a.x() * b.x() - a.y() * b.y() - a.z() * b.z(),
                               a.w() * b.x() + a.x() * b.w() + a.y() * b.z() - a.z() * b.y(),
@@ -558,7 +558,7 @@ struct quat_product {
 /** \returns the concatenation of two rotations as a quaternion-quaternion product */
 template <class Derived>
 template <class OtherDerived>
-EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE Quaternion<typename internal::traits<Derived>::Scalar>
+EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE Quaternion<typename internal::traits<Derived>::Scalar>
 QuaternionBase<Derived>::operator*(const QuaternionBase<OtherDerived>& other) const {
   EIGEN_STATIC_ASSERT(
       (internal::is_same<typename Derived::Scalar, typename OtherDerived::Scalar>::value),
@@ -570,7 +570,7 @@ QuaternionBase<Derived>::operator*(const QuaternionBase<OtherDerived>& other) co
 /** \sa operator*(Quaternion) */
 template <class Derived>
 template <class OtherDerived>
-EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE Derived& QuaternionBase<Derived>::operator*=(
+EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE Derived& QuaternionBase<Derived>::operator*=(
     const QuaternionBase<OtherDerived>& other) {
   derived() = derived() * other.derived();
   return derived();
@@ -584,7 +584,7 @@ EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE Derived& QuaternionBase<Derived>::operator
  *   - Via a Matrix3: 24 + 15n
  */
 template <class Derived>
-EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE typename QuaternionBase<Derived>::Vector3
+EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE typename QuaternionBase<Derived>::Vector3
 QuaternionBase<Derived>::_transformVector(const Vector3& v) const {
   // Note that this algorithm comes from the optimization by hand
   // of the conversion to a Matrix followed by a Matrix/Vector product.

@@ -230,30 +230,36 @@ general_matrix_vector_product<Index, LhsScalar, LhsMapper, ColMajor, ConjugateLh
       pstoreu(res + i + ResPacketSize * 0, pmadd(c0, palpha, ploadu<ResPacket>(res + i + ResPacketSize * 0)));
       i += ResPacketSize;
     }
-    if (HasHalf && i < n_half) {
-      ResPacketHalf c0 = pset1<ResPacketHalf>(ResScalar(0));
-      for (Index j = j2; j < jend; j += 1) {
-        RhsPacketHalf b0 = pset1<RhsPacketHalf>(rhs(j, 0));
-        c0 = pcj_half.pmadd(lhs.template load<LhsPacketHalf, LhsAlignment>(i + 0, j), b0, c0);
+    EIGEN_IF_CONSTEXPR(HasHalf) {
+      if (i < n_half) {
+        ResPacketHalf c0 = pset1<ResPacketHalf>(ResScalar(0));
+        for (Index j = j2; j < jend; j += 1) {
+          RhsPacketHalf b0 = pset1<RhsPacketHalf>(rhs(j, 0));
+          c0 = pcj_half.pmadd(lhs.template load<LhsPacketHalf, LhsAlignment>(i + 0, j), b0, c0);
+        }
+        pstoreu(res + i + ResPacketSizeHalf * 0,
+                pmadd(c0, palpha_half, ploadu<ResPacketHalf>(res + i + ResPacketSizeHalf * 0)));
+        i += ResPacketSizeHalf;
       }
-      pstoreu(res + i + ResPacketSizeHalf * 0,
-              pmadd(c0, palpha_half, ploadu<ResPacketHalf>(res + i + ResPacketSizeHalf * 0)));
-      i += ResPacketSizeHalf;
     }
-    if (HasQuarter && i < n_quarter) {
-      ResPacketQuarter c0 = pset1<ResPacketQuarter>(ResScalar(0));
-      for (Index j = j2; j < jend; j += 1) {
-        RhsPacketQuarter b0 = pset1<RhsPacketQuarter>(rhs(j, 0));
-        c0 = pcj_quarter.pmadd(lhs.template load<LhsPacketQuarter, LhsAlignment>(i + 0, j), b0, c0);
+    EIGEN_IF_CONSTEXPR(HasQuarter) {
+      if (i < n_quarter) {
+        ResPacketQuarter c0 = pset1<ResPacketQuarter>(ResScalar(0));
+        for (Index j = j2; j < jend; j += 1) {
+          RhsPacketQuarter b0 = pset1<RhsPacketQuarter>(rhs(j, 0));
+          c0 = pcj_quarter.pmadd(lhs.template load<LhsPacketQuarter, LhsAlignment>(i + 0, j), b0, c0);
+        }
+        pstoreu(res + i + ResPacketSizeQuarter * 0,
+                pmadd(c0, palpha_quarter, ploadu<ResPacketQuarter>(res + i + ResPacketSizeQuarter * 0)));
+        i += ResPacketSizeQuarter;
       }
-      pstoreu(res + i + ResPacketSizeQuarter * 0,
-              pmadd(c0, palpha_quarter, ploadu<ResPacketQuarter>(res + i + ResPacketSizeQuarter * 0)));
-      i += ResPacketSizeQuarter;
     }
-    for (; i < rows; ++i) {
-      ResScalar c0(0);
-      for (Index j = j2; j < jend; j += 1) c0 += cj.pmul(lhs(i, j), rhs(j, 0));
-      res[i] += alpha * c0;
+    EIGEN_IF_CONSTEXPR(ResPacketSize > 1) {
+      for (; i < rows; ++i) {
+        ResScalar c0(0);
+        for (Index j = j2; j < jend; j += 1) c0 += cj.pmul(lhs(i, j), rhs(j, 0));
+        res[i] += alpha * c0;
+      }
     }
   }
 }
@@ -363,17 +369,19 @@ general_matrix_vector_product<Index, LhsScalar, LhsMapper, RowMajor, ConjugateLh
     ResScalar cc6 = predux(c6);
     ResScalar cc7 = predux(c7);
 
-    for (Index j = fullColBlockEnd; j < cols; ++j) {
-      RhsScalar b0 = rhs(j, 0);
+    EIGEN_IF_CONSTEXPR(LhsPacketSize > 1) {
+      for (Index j = fullColBlockEnd; j < cols; ++j) {
+        RhsScalar b0 = rhs(j, 0);
 
-      cc0 += cj.pmul(lhs(i + 0, j), b0);
-      cc1 += cj.pmul(lhs(i + 1, j), b0);
-      cc2 += cj.pmul(lhs(i + 2, j), b0);
-      cc3 += cj.pmul(lhs(i + 3, j), b0);
-      cc4 += cj.pmul(lhs(i + 4, j), b0);
-      cc5 += cj.pmul(lhs(i + 5, j), b0);
-      cc6 += cj.pmul(lhs(i + 6, j), b0);
-      cc7 += cj.pmul(lhs(i + 7, j), b0);
+        cc0 += cj.pmul(lhs(i + 0, j), b0);
+        cc1 += cj.pmul(lhs(i + 1, j), b0);
+        cc2 += cj.pmul(lhs(i + 2, j), b0);
+        cc3 += cj.pmul(lhs(i + 3, j), b0);
+        cc4 += cj.pmul(lhs(i + 4, j), b0);
+        cc5 += cj.pmul(lhs(i + 5, j), b0);
+        cc6 += cj.pmul(lhs(i + 6, j), b0);
+        cc7 += cj.pmul(lhs(i + 7, j), b0);
+      }
     }
     res[(i + 0) * resIncr] += alpha * cc0;
     res[(i + 1) * resIncr] += alpha * cc1;
@@ -401,13 +409,15 @@ general_matrix_vector_product<Index, LhsScalar, LhsMapper, RowMajor, ConjugateLh
     ResScalar cc2 = predux(c2);
     ResScalar cc3 = predux(c3);
 
-    for (Index j = fullColBlockEnd; j < cols; ++j) {
-      RhsScalar b0 = rhs(j, 0);
+    EIGEN_IF_CONSTEXPR(LhsPacketSize > 1) {
+      for (Index j = fullColBlockEnd; j < cols; ++j) {
+        RhsScalar b0 = rhs(j, 0);
 
-      cc0 += cj.pmul(lhs(i + 0, j), b0);
-      cc1 += cj.pmul(lhs(i + 1, j), b0);
-      cc2 += cj.pmul(lhs(i + 2, j), b0);
-      cc3 += cj.pmul(lhs(i + 3, j), b0);
+        cc0 += cj.pmul(lhs(i + 0, j), b0);
+        cc1 += cj.pmul(lhs(i + 1, j), b0);
+        cc2 += cj.pmul(lhs(i + 2, j), b0);
+        cc3 += cj.pmul(lhs(i + 3, j), b0);
+      }
     }
     res[(i + 0) * resIncr] += alpha * cc0;
     res[(i + 1) * resIncr] += alpha * cc1;
@@ -426,41 +436,45 @@ general_matrix_vector_product<Index, LhsScalar, LhsMapper, RowMajor, ConjugateLh
     ResScalar cc0 = predux(c0);
     ResScalar cc1 = predux(c1);
 
-    for (Index j = fullColBlockEnd; j < cols; ++j) {
-      RhsScalar b0 = rhs(j, 0);
+    EIGEN_IF_CONSTEXPR(LhsPacketSize > 1) {
+      for (Index j = fullColBlockEnd; j < cols; ++j) {
+        RhsScalar b0 = rhs(j, 0);
 
-      cc0 += cj.pmul(lhs(i + 0, j), b0);
-      cc1 += cj.pmul(lhs(i + 1, j), b0);
+        cc0 += cj.pmul(lhs(i + 0, j), b0);
+        cc1 += cj.pmul(lhs(i + 1, j), b0);
+      }
     }
     res[(i + 0) * resIncr] += alpha * cc0;
     res[(i + 1) * resIncr] += alpha * cc1;
   }
   for (; i < rows; ++i) {
     ResPacket c0 = pset1<ResPacket>(ResScalar(0));
-    ResPacketHalf c0_h = pset1<ResPacketHalf>(ResScalar(0));
-    ResPacketQuarter c0_q = pset1<ResPacketQuarter>(ResScalar(0));
 
     for (Index j = 0; j < fullColBlockEnd; j += LhsPacketSize) {
       RhsPacket b0 = rhs.template load<RhsPacket, Unaligned>(j, 0);
       c0 = pcj.pmadd(lhs.template load<LhsPacket, LhsAlignment>(i, j), b0, c0);
     }
     ResScalar cc0 = predux(c0);
-    if (HasHalf) {
+    EIGEN_IF_CONSTEXPR(HasHalf) {
+      ResPacketHalf c0_h = pset1<ResPacketHalf>(ResScalar(0));
       for (Index j = fullColBlockEnd; j < halfColBlockEnd; j += LhsPacketSizeHalf) {
         RhsPacketHalf b0 = rhs.template load<RhsPacketHalf, Unaligned>(j, 0);
         c0_h = pcj_half.pmadd(lhs.template load<LhsPacketHalf, LhsAlignment>(i, j), b0, c0_h);
       }
       cc0 += predux(c0_h);
     }
-    if (HasQuarter) {
+    EIGEN_IF_CONSTEXPR(HasQuarter) {
+      ResPacketQuarter c0_q = pset1<ResPacketQuarter>(ResScalar(0));
       for (Index j = halfColBlockEnd; j < quarterColBlockEnd; j += LhsPacketSizeQuarter) {
         RhsPacketQuarter b0 = rhs.template load<RhsPacketQuarter, Unaligned>(j, 0);
         c0_q = pcj_quarter.pmadd(lhs.template load<LhsPacketQuarter, LhsAlignment>(i, j), b0, c0_q);
       }
       cc0 += predux(c0_q);
     }
-    for (Index j = quarterColBlockEnd; j < cols; ++j) {
-      cc0 += cj.pmul(lhs(i, j), rhs(j, 0));
+    EIGEN_IF_CONSTEXPR(LhsPacketSize > 1) {
+      for (Index j = quarterColBlockEnd; j < cols; ++j) {
+        cc0 += cj.pmul(lhs(i, j), rhs(j, 0));
+      }
     }
     res[i * resIncr] += alpha * cc0;
   }

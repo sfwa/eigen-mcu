@@ -71,7 +71,7 @@ class RotationBase {
    *  - a vector of size Dim
    */
   template <typename OtherDerived>
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE
+  EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE
       typename internal::rotation_base_generic_product_selector<Derived, OtherDerived,
                                                                 OtherDerived::IsVectorAtCompileTime>::ReturnType
       operator*(const EigenBase<OtherDerived>& e) const {
@@ -132,7 +132,7 @@ template <typename RotationDerived, typename OtherVectorType>
 struct rotation_base_generic_product_selector<RotationDerived, OtherVectorType, true> {
   enum { Dim = RotationDerived::Dim };
   typedef Matrix<typename RotationDerived::Scalar, Dim, 1> ReturnType;
-  EIGEN_DEVICE_FUNC static EIGEN_STRONG_INLINE ReturnType run(const RotationDerived& r, const OtherVectorType& v) {
+  EIGEN_DEVICE_FUNC static EIGEN_ALWAYS_INLINE ReturnType run(const RotationDerived& r, const OtherVectorType& v) {
     return r._transformVector(v);
   }
 };

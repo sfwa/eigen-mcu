@@ -205,7 +205,15 @@ class LDLT : public SolverBase<LDLT<MatrixType_, UpLo_> > {
    */
   RealScalar rcond() const {
     eigen_assert(m_isInitialized && "LDLT is not initialized.");
-    return internal::rcond_estimate_helper(m_l1_norm, *this);
+    // Compute induced L1 norm lazily so LDLT::compute() avoids O(n^2) norm work when rcond() is unused.
+    const MatrixType recon = reconstructedMatrix();
+    const Index size = recon.cols();
+    RealScalar l1_norm = RealScalar(0);
+    for (Index col = 0; col < size; ++col) {
+      RealScalar abs_col_sum = recon.col(col).template lpNorm<1>();
+      if (abs_col_sum > l1_norm) l1_norm = abs_col_sum;
+    }
+    return internal::rcond_estimate_helper(l1_norm, *this);
   }
 
   template <typename Derived>
@@ -261,7 +269,6 @@ class LDLT : public SolverBase<LDLT<MatrixType_, UpLo_> > {
    * is not stored), and the diagonal entries correspond to D.
    */
   MatrixType m_matrix;
-  RealScalar m_l1_norm;
   TranspositionType m_transpositions;
   TmpMatrixType m_temporary;
   internal::SignMatrix m_sign;
@@ -356,9 +363,13 @@ struct ldlt_inplace<Lower> {
         return ret;
       }
 
-      if ((rs > 0) && pivot_is_valid)
-        A21 /= realAkk;
-      else if (rs > 0)
+      if ((rs > 0) && pivot_is_valid) {
+        const RealScalar inv_akk = RealScalar(1) / realAkk;
+        if (numext::isfinite(inv_akk) && inv_akk != RealScalar(0))
+          A21 *= inv_akk;
+        else
+          A21 /= realAkk;
+      } else if (rs > 0)
         ret = ret && (A21.array() == Scalar(0)).all();
 
       if (found_zero_pivot && pivot_is_valid)
@@ -477,20 +488,6 @@ LDLT<MatrixType, UpLo_>& LDLT<MatrixType, UpLo_>::compute(const EigenBase<InputT
 
   m_matrix = a.derived();
 
-  // Compute matrix L1 norm = max abs column sum.
-  m_l1_norm = RealScalar(0);
-  // TODO move this code to SelfAdjointView
-  for (Index col = 0; col < size; ++col) {
-    RealScalar abs_col_sum;
-    if (UpLo_ == Lower)
-      abs_col_sum =
-          m_matrix.col(col).tail(size - col).template lpNorm<1>() + m_matrix.row(col).head(col).template lpNorm<1>();
-    else
-      abs_col_sum =
-          m_matrix.col(col).head(col).template lpNorm<1>() + m_matrix.row(col).tail(size - col).template lpNorm<1>();
-    if (abs_col_sum > m_l1_norm) m_l1_norm = abs_col_sum;
-  }
-
   m_transpositions.resize(size);
   m_isInitialized = false;
   m_temporary.resize(size);
@@ -561,10 +558,19 @@ void LDLT<MatrixType_, UpLo_>::_solve_impl_transposed(const RhsType& rhs, DstTyp
   // xSYTRS routines use 0 for the tolerance. Using numeric_limits::min() gives us more robustness to denormals.
   RealScalar tolerance = (std::numeric_limits<RealScalar>::min)();
   for (Index i = 0; i < vecD.size(); ++i) {
-    if (abs(vecD(i)) > tolerance)
-      dst.row(i) /= vecD(i);
-    else
+    if (abs(vecD(i)) > tolerance) {
+      if (dst.cols() > 1) {
+        const RealScalar inv_d = RealScalar(1) / vecD(i);
+        if (numext::isfinite(inv_d) && inv_d != RealScalar(0))
+          dst.row(i) *= inv_d;
+        else
+          dst.row(i) /= vecD(i);
+      } else {
+        dst.row(i) /= vecD(i);
+      }
+    } else {
       dst.row(i).setZero();
+    }
   }
 
   // dst = L^-* (D^-* L^-1 P b)

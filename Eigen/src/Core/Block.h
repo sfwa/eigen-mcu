@@ -326,7 +326,7 @@ class BlockImpl_dense<XprType, BlockRows, BlockCols, InnerPanel, true>
 
   /** Column or Row constructor
    */
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE BlockImpl_dense(XprType& xpr, Index i)
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE BlockImpl_dense(XprType& xpr, Index i)
       : Base((BlockRows == 0 || BlockCols == 0)
                  ? nullptr
                  : add_to_nullable_pointer(
@@ -345,7 +345,7 @@ class BlockImpl_dense<XprType, BlockRows, BlockCols, InnerPanel, true>
 
   /** Fixed-size constructor
    */
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE BlockImpl_dense(XprType& xpr, Index startRow, Index startCol)
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE BlockImpl_dense(XprType& xpr, Index startRow, Index startCol)
       : Base((BlockRows == 0 || BlockCols == 0)
                  ? nullptr
                  : add_to_nullable_pointer(xpr.data(),
@@ -359,8 +359,8 @@ class BlockImpl_dense<XprType, BlockRows, BlockCols, InnerPanel, true>
 
   /** Dynamic-size constructor
    */
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE BlockImpl_dense(XprType& xpr, Index startRow, Index startCol, Index blockRows,
-                                                        Index blockCols)
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE BlockImpl_dense(XprType& xpr, Index startRow, Index startCol, Index blockRows,
+                                                          Index blockCols)
       : Base((blockRows == 0 || blockCols == 0)
                  ? nullptr
                  : add_to_nullable_pointer(xpr.data(),

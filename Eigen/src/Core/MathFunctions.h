@@ -801,44 +801,48 @@ int log2_floor(const BitsType& x) {
 // Implementation of is* functions
 
 template <typename T>
-EIGEN_DEVICE_FUNC std::enable_if_t<!(std::numeric_limits<T>::has_infinity || std::numeric_limits<T>::has_quiet_NaN ||
-                                     std::numeric_limits<T>::has_signaling_NaN),
-                                   bool>
-isfinite_impl(const T&) {
+EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE
+    std::enable_if_t<!(std::numeric_limits<T>::has_infinity || std::numeric_limits<T>::has_quiet_NaN ||
+                       std::numeric_limits<T>::has_signaling_NaN),
+                     bool>
+    isfinite_impl(const T&) {
   return true;
 }
 
 template <typename T>
-EIGEN_DEVICE_FUNC std::enable_if_t<(std::numeric_limits<T>::has_infinity || std::numeric_limits<T>::has_quiet_NaN ||
-                                    std::numeric_limits<T>::has_signaling_NaN) &&
-                                       (!NumTraits<T>::IsComplex),
-                                   bool>
-isfinite_impl(const T& x) {
+EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE
+    std::enable_if_t<(std::numeric_limits<T>::has_infinity || std::numeric_limits<T>::has_quiet_NaN ||
+                      std::numeric_limits<T>::has_signaling_NaN) &&
+                         (!NumTraits<T>::IsComplex),
+                     bool>
+    isfinite_impl(const T& x) {
   EIGEN_USING_STD(isfinite);
   return isfinite EIGEN_NOT_A_MACRO(x);
 }
 
 template <typename T>
-EIGEN_DEVICE_FUNC std::enable_if_t<!std::numeric_limits<T>::has_infinity, bool> isinf_impl(const T&) {
+EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE std::enable_if_t<!std::numeric_limits<T>::has_infinity, bool> isinf_impl(
+    const T&) {
   return false;
 }
 
 template <typename T>
-EIGEN_DEVICE_FUNC std::enable_if_t<(std::numeric_limits<T>::has_infinity && !NumTraits<T>::IsComplex), bool> isinf_impl(
-    const T& x) {
+EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE
+    std::enable_if_t<(std::numeric_limits<T>::has_infinity && !NumTraits<T>::IsComplex), bool>
+    isinf_impl(const T& x) {
   EIGEN_USING_STD(isinf);
   return isinf EIGEN_NOT_A_MACRO(x);
 }
 
 template <typename T>
-EIGEN_DEVICE_FUNC
-std::enable_if_t<!(std::numeric_limits<T>::has_quiet_NaN || std::numeric_limits<T>::has_signaling_NaN), bool>
-isnan_impl(const T&) {
+EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE
+    std::enable_if_t<!(std::numeric_limits<T>::has_quiet_NaN || std::numeric_limits<T>::has_signaling_NaN), bool>
+    isnan_impl(const T&) {
   return false;
 }
 
 template <typename T>
-EIGEN_DEVICE_FUNC std::enable_if_t<
+EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE std::enable_if_t<
     (std::numeric_limits<T>::has_quiet_NaN || std::numeric_limits<T>::has_signaling_NaN) && (!NumTraits<T>::IsComplex),
     bool>
 isnan_impl(const T& x) {
@@ -1253,15 +1257,15 @@ SYCL_SPECIALIZE_FLOATING_TYPES_BINARY(pow, pow)
 #endif
 
 template <typename T>
-EIGEN_DEVICE_FUNC bool(isnan)(const T& x) {
+EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE bool(isnan)(const T& x) {
   return internal::isnan_impl(x);
 }
 template <typename T>
-EIGEN_DEVICE_FUNC bool(isinf)(const T& x) {
+EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE bool(isinf)(const T& x) {
   return internal::isinf_impl(x);
 }
 template <typename T>
-EIGEN_DEVICE_FUNC bool(isfinite)(const T& x) {
+EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE bool(isfinite)(const T& x) {
   return internal::isfinite_impl(x);
 }
 

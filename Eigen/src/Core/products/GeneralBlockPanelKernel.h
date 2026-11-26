@@ -1092,7 +1092,7 @@ template <int nr, Index LhsProgress, Index RhsProgress, typename LhsScalar, type
 struct lhs_process_one_packet {
   typedef typename GEBPTraits::RhsPacketx4 RhsPacketx4;
 
-  EIGEN_STRONG_INLINE void peeled_kc_onestep(Index K, const LhsScalar* blA, const RhsScalar* blB, GEBPTraits traits,
+  EIGEN_ALWAYS_INLINE void peeled_kc_onestep(Index K, const LhsScalar* blA, const RhsScalar* blB, GEBPTraits traits,
                                              LhsPacket* A0, RhsPacketx4* rhs_panel, RhsPacket* T0, AccPacket* C0,
                                              AccPacket* C1, AccPacket* C2, AccPacket* C3) {
     EIGEN_ASM_COMMENT("begin step of gebp micro kernel 1X4");
@@ -1405,7 +1405,7 @@ template <int nr, Index LhsProgress, Index RhsProgress, typename LhsScalar, type
 struct lhs_process_fraction_of_packet
     : lhs_process_one_packet<nr, LhsProgress, RhsProgress, LhsScalar, RhsScalar, ResScalar, AccPacket, LhsPacket,
                              RhsPacket, ResPacket, GEBPTraits, LinearMapper, DataMapper> {
-  EIGEN_STRONG_INLINE void peeled_kc_onestep(Index K, const LhsScalar* blA, const RhsScalar* blB, GEBPTraits traits,
+  EIGEN_ALWAYS_INLINE void peeled_kc_onestep(Index K, const LhsScalar* blA, const RhsScalar* blB, GEBPTraits traits,
                                              LhsPacket* A0, RhsPacket* B_0, RhsPacket* B1, RhsPacket* B2, RhsPacket* B3,
                                              AccPacket* C0, AccPacket* C1, AccPacket* C2, AccPacket* C3) {
     EIGEN_ASM_COMMENT("begin step of gebp micro kernel 1X4");

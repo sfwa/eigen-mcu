@@ -152,7 +152,15 @@ class LLT : public SolverBase<LLT<MatrixType_, UpLo_> > {
   RealScalar rcond() const {
     eigen_assert(m_isInitialized && "LLT is not initialized.");
     eigen_assert(m_info == Success && "LLT failed because matrix appears to be negative");
-    return internal::rcond_estimate_helper(m_l1_norm, *this);
+    // Compute induced L1 norm lazily so LLT::compute() avoids O(n^2) norm work when rcond() is unused.
+    const typename MatrixType::PlainObject recon = matrixL() * matrixL().adjoint().toDenseMatrix();
+    const Index size = recon.cols();
+    RealScalar l1_norm = RealScalar(0);
+    for (Index col = 0; col < size; ++col) {
+      RealScalar abs_col_sum = recon.col(col).template lpNorm<1>();
+      if (abs_col_sum > l1_norm) l1_norm = abs_col_sum;
+    }
+    return internal::rcond_estimate_helper(l1_norm, *this);
   }
 
   /** \returns the LLT decomposition matrix
@@ -206,7 +214,6 @@ class LLT : public SolverBase<LLT<MatrixType_, UpLo_> > {
    * The strict upper part is not used and even not initialized.
    */
   MatrixType m_matrix;
-  RealScalar m_l1_norm;
   bool m_isInitialized;
   ComputationInfo m_info;
 };
@@ -225,7 +232,7 @@ static Index llt_rank_update_lower(MatrixType& mat, const VectorType& vec,
   typedef typename MatrixType::ColXpr ColXpr;
   typedef internal::remove_all_t<ColXpr> ColXprCleaned;
   typedef typename ColXprCleaned::SegmentReturnType ColXprSegment;
-  typedef Matrix<Scalar, Dynamic, 1> TempVectorType;
+  typedef Matrix<Scalar, VectorType::SizeAtCompileTime, 1, 0, VectorType::MaxSizeAtCompileTime, 1> TempVectorType;
   typedef typename TempVectorType::SegmentReturnType TempVecSegment;
 
   Index n = mat.cols();
@@ -300,7 +307,13 @@ struct llt_inplace<Scalar, Lower> {
       if (x <= RealScalar(0)) return k;
       mat.coeffRef(k, k) = x = sqrt(x);
       if (k > 0 && rs > 0) A21.noalias() -= A20 * A10.adjoint();
-      if (rs > 0) A21 /= x;
+      if (rs > 0) {
+        const RealScalar inv_x = RealScalar(1) / x;
+        if (numext::isfinite(inv_x) && inv_x != RealScalar(0))
+          A21 *= inv_x;
+        else
+          A21 /= x;
+      }
     }
     return -1;
   }
@@ -401,20 +414,6 @@ LLT<MatrixType, UpLo_>& LLT<MatrixType, UpLo_>::compute(const EigenBase<InputTyp
   const Index size = a.rows();
   m_matrix.resize(size, size);
   if (!internal::is_same_dense(m_matrix, a.derived())) m_matrix = a.derived();
-
-  // Compute matrix L1 norm = max abs column sum.
-  m_l1_norm = RealScalar(0);
-  // TODO move this code to SelfAdjointView
-  for (Index col = 0; col < size; ++col) {
-    RealScalar abs_col_sum;
-    if (UpLo_ == Lower)
-      abs_col_sum =
-          m_matrix.col(col).tail(size - col).template lpNorm<1>() + m_matrix.row(col).head(col).template lpNorm<1>();
-    else
-      abs_col_sum =
-          m_matrix.col(col).head(col).template lpNorm<1>() + m_matrix.row(col).tail(size - col).template lpNorm<1>();
-    if (abs_col_sum > m_l1_norm) m_l1_norm = abs_col_sum;
-  }
 
   m_isInitialized = true;
   bool ok = Traits::inplace_decomposition(m_matrix);

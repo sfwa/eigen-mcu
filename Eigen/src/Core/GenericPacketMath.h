@@ -653,6 +653,17 @@ EIGEN_DEVICE_FUNC inline Packet pmin(const Packet& a, const Packet& b) {
   return numext::mini(a, b);
 }
 
+#if EIGEN_MCU_HAS_VMAXNM
+template <>
+EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE float pmin<float>(const float& a, const float& b) {
+  return std::fmin(a, b);
+}
+template <>
+EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE double pmin<double>(const double& a, const double& b) {
+  return std::fmin(a, b);
+}
+#endif
+
 /** \internal \returns the min of \a a and \a b  (coeff-wise).
     NaNPropagation determines the NaN propagation semantics. */
 template <int NaNPropagation, typename Packet>
@@ -661,12 +672,34 @@ EIGEN_DEVICE_FUNC inline Packet pmin(const Packet& a, const Packet& b) {
   return pminmax_impl<NaNPropagation, IsInteger>::run(a, b, EIGEN_BINARY_OP_NAN_PROPAGATION(Packet, (pmin<Packet>)));
 }
 
+#if EIGEN_MCU_HAS_VMAXNM
+template <>
+EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE float pmin<PropagateNumbers, float>(const float& a, const float& b) {
+  return std::fmin(a, b);
+}
+template <>
+EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE double pmin<PropagateNumbers, double>(const double& a, const double& b) {
+  return std::fmin(a, b);
+}
+#endif
+
 /** \internal \returns the max of \a a and \a b  (coeff-wise)
     If \a a or \b b is NaN, the return value is implementation defined. */
 template <typename Packet>
 EIGEN_DEVICE_FUNC inline Packet pmax(const Packet& a, const Packet& b) {
   return numext::maxi(a, b);
 }
+
+#if EIGEN_MCU_HAS_VMAXNM
+template <>
+EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE float pmax<float>(const float& a, const float& b) {
+  return std::fmax(a, b);
+}
+template <>
+EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE double pmax<double>(const double& a, const double& b) {
+  return std::fmax(a, b);
+}
+#endif
 
 /** \internal \returns the max of \a a and \a b  (coeff-wise).
     NaNPropagation determines the NaN propagation semantics. */
@@ -675,6 +708,17 @@ EIGEN_DEVICE_FUNC inline Packet pmax(const Packet& a, const Packet& b) {
   constexpr bool IsInteger = NumTraits<typename unpacket_traits<Packet>::type>::IsInteger;
   return pminmax_impl<NaNPropagation, IsInteger>::run(a, b, EIGEN_BINARY_OP_NAN_PROPAGATION(Packet, (pmax<Packet>)));
 }
+
+#if EIGEN_MCU_HAS_VMAXNM
+template <>
+EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE float pmax<PropagateNumbers, float>(const float& a, const float& b) {
+  return std::fmax(a, b);
+}
+template <>
+EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE double pmax<PropagateNumbers, double>(const double& a, const double& b) {
+  return std::fmax(a, b);
+}
+#endif
 
 /** \internal \returns the absolute value of \a a */
 template <typename Packet>

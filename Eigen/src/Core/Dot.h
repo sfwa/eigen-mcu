@@ -46,7 +46,7 @@ struct squared_norm_impl<Derived, bool> {
  */
 template <typename Derived>
 template <typename OtherDerived>
-EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE
+EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE
     typename ScalarBinaryOpTraits<typename internal::traits<Derived>::Scalar,
                                   typename internal::traits<OtherDerived>::Scalar>::ReturnType
     MatrixBase<Derived>::dot(const MatrixBase<OtherDerived>& other) const {
@@ -95,10 +95,16 @@ EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE const typename MatrixBase<Derived>::PlainO
   Nested_ n(derived());
   RealScalar z = n.squaredNorm();
   // NOTE: after extensive benchmarking, this conditional does not impact performance, at least on recent x86 CPU
-  if (z > RealScalar(0))
-    return n / numext::sqrt(z);
-  else
+  if (z > RealScalar(0)) {
+    // For finite real z > 0, 1 / sqrt(z) is guaranteed finite and non-subnormal.
+    EIGEN_IF_CONSTEXPR(!NumTraits<Scalar>::IsComplex && !NumTraits<Scalar>::IsInteger) {
+      return n * (RealScalar(1) / numext::sqrt(z));
+    } else {
+      return n / numext::sqrt(z);
+    }
+  } else {
     return n;
+  }
 }
 
 /** Normalizes the vector, i.e. divides it by its own norm.
@@ -113,7 +119,13 @@ template <typename Derived>
 EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE void MatrixBase<Derived>::normalize() {
   RealScalar z = squaredNorm();
   // NOTE: after extensive benchmarking, this conditional does not impact performance, at least on recent x86 CPU
-  if (z > RealScalar(0)) derived() /= numext::sqrt(z);
+  if (z > RealScalar(0)) {
+    EIGEN_IF_CONSTEXPR(!NumTraits<Scalar>::IsComplex && !NumTraits<Scalar>::IsInteger) {
+      derived() *= RealScalar(1) / numext::sqrt(z);
+    } else {
+      derived() /= numext::sqrt(z);
+    }
+  }
 }
 
 /** \returns an expression of the quotient of \c *this by its own norm while avoiding underflow and overflow.
