@@ -106,13 +106,82 @@ struct inner_product_evaluator {
   const variable_if_dynamic<Index, SizeAtCompileTime> m_size;
 };
 
+template <typename Evaluator, int K, int End, bool Done = (K + 4 > End)>
+struct scalar_inner_product_unroll4 {
+  using Scalar = typename Evaluator::Scalar;
+  static EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE void run(const Evaluator& eval, Scalar& s0, Scalar& s1, Scalar& s2,
+                                                        Scalar& s3) {
+    s0 = eval.coeff(s0, K + 0);
+    s1 = eval.coeff(s1, K + 1);
+    s2 = eval.coeff(s2, K + 2);
+    s3 = eval.coeff(s3, K + 3);
+    scalar_inner_product_unroll4<Evaluator, K + 4, End>::run(eval, s0, s1, s2, s3);
+  }
+};
+
+template <typename Evaluator, int K, int End>
+struct scalar_inner_product_unroll4<Evaluator, K, End, true> {
+  using Scalar = typename Evaluator::Scalar;
+  static EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE void run(const Evaluator&, Scalar&, Scalar&, Scalar&, Scalar&) {}
+};
+
+template <typename Evaluator, int K, int End, bool Done = (K + 2 > End)>
+struct scalar_inner_product_unroll2 {
+  using Scalar = typename Evaluator::Scalar;
+  static EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE void run(const Evaluator& eval, Scalar& s0, Scalar& s1) {
+    s0 = eval.coeff(s0, K + 0);
+    s1 = eval.coeff(s1, K + 1);
+    scalar_inner_product_unroll2<Evaluator, K + 2, End>::run(eval, s0, s1);
+  }
+};
+
+template <typename Evaluator, int K, int End>
+struct scalar_inner_product_unroll2<Evaluator, K, End, true> {
+  using Scalar = typename Evaluator::Scalar;
+  static EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE void run(const Evaluator&, Scalar&, Scalar&) {}
+};
+
+template <typename Evaluator, int K, int End, bool Done = (K >= End)>
+struct scalar_inner_product_unroll1 {
+  using Scalar = typename Evaluator::Scalar;
+  static EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE Scalar run(const Evaluator& eval, Scalar acc) {
+    return scalar_inner_product_unroll1<Evaluator, K + 1, End>::run(eval, eval.coeff(acc, K));
+  }
+};
+
+template <typename Evaluator, int K, int End>
+struct scalar_inner_product_unroll1<Evaluator, K, End, true> {
+  using Scalar = typename Evaluator::Scalar;
+  static EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE Scalar run(const Evaluator&, Scalar acc) { return acc; }
+};
+
+// Flat multi-accumulator FMA unroller: replaces recursive binary-tree splitting
+// to emit fewer vmul/vadd ops and avoid FP64 register spills on 16-reg FPv5-D16
+// while keeping independent FMA chains interleaved to hide pipeline latency.
 template <typename Evaluator, int Start, int Len>
 struct scalar_inner_product_unroller {
   using Scalar = typename Evaluator::Scalar;
+  static constexpr int End = Start + Len;
+  static constexpr bool Use4Way = (Len >= 8) && !is_same<Scalar, double>::value;
   static EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE Scalar run(const Evaluator& eval) {
-    constexpr int Half = Len / 2;
-    return padd(scalar_inner_product_unroller<Evaluator, Start, Half>::run(eval),
-                scalar_inner_product_unroller<Evaluator, Start + Half, Len - Half>::run(eval));
+    EIGEN_IF_CONSTEXPR(Use4Way) {
+      Scalar s0 = eval.coeff(Start + 0);
+      Scalar s1 = eval.coeff(Start + 1);
+      Scalar s2 = eval.coeff(Start + 2);
+      Scalar s3 = eval.coeff(Start + 3);
+      constexpr int MainEnd = Start + (Len & ~3);
+      scalar_inner_product_unroll4<Evaluator, Start + 4, MainEnd>::run(eval, s0, s1, s2, s3);
+      Scalar acc = padd(padd(s0, s1), padd(s2, s3));
+      return scalar_inner_product_unroll1<Evaluator, MainEnd, End>::run(eval, acc);
+    } else {
+      // 2-way interleaved FMA for double (4 FP64 regs total) and Len in [4, 7].
+      Scalar s0 = eval.coeff(Start + 0);
+      Scalar s1 = eval.coeff(Start + 1);
+      constexpr int MainEnd = Start + (Len & ~1);
+      scalar_inner_product_unroll2<Evaluator, Start + 2, MainEnd>::run(eval, s0, s1);
+      Scalar acc = padd(s0, s1);
+      return scalar_inner_product_unroll1<Evaluator, MainEnd, End>::run(eval, acc);
+    }
   }
 };
 
@@ -142,8 +211,8 @@ template <typename Evaluator, int Start>
 struct scalar_inner_product_unroller<Evaluator, Start, 4> {
   using Scalar = typename Evaluator::Scalar;
   static EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE Scalar run(const Evaluator& eval) {
-    Scalar s0 = eval.coeff(eval.coeff(Start), Start + 1);
-    Scalar s1 = eval.coeff(eval.coeff(Start + 2), Start + 3);
+    Scalar s0 = eval.coeff(eval.coeff(Start), Start + 2);
+    Scalar s1 = eval.coeff(eval.coeff(Start + 1), Start + 3);
     return padd(s0, s1);
   }
 };
