@@ -389,7 +389,7 @@ class redux_evaluator : public internal::evaluator<XprType_> {
 
  public:
   typedef XprType_ XprType;
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE explicit redux_evaluator(const XprType& xpr) : Base(xpr) {}
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE explicit redux_evaluator(const XprType& xpr) : Base(xpr) {}
 
   typedef typename XprType::Scalar Scalar;
   typedef typename XprType::CoeffReturnType CoeffReturnType;
@@ -406,17 +406,17 @@ class redux_evaluator : public internal::evaluator<XprType_> {
     InnerSizeAtCompileTime = XprType::InnerSizeAtCompileTime
   };
 
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE CoeffReturnType coeffByOuterInner(Index outer, Index inner) const {
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE CoeffReturnType coeffByOuterInner(Index outer, Index inner) const {
     return Base::coeff(IsRowMajor ? outer : inner, IsRowMajor ? inner : outer);
   }
 
   template <int LoadMode, typename PacketType>
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE PacketType packetByOuterInner(Index outer, Index inner) const {
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE PacketType packetByOuterInner(Index outer, Index inner) const {
     return Base::template packet<LoadMode, PacketType>(IsRowMajor ? outer : inner, IsRowMajor ? inner : outer);
   }
 
   template <int LoadMode, typename PacketType>
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE PacketType packetSegmentByOuterInner(Index outer, Index inner, Index begin,
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE PacketType packetSegmentByOuterInner(Index outer, Index inner, Index begin,
                                                                              Index count) const {
     return Base::template packetSegment<LoadMode, PacketType>(IsRowMajor ? outer : inner, IsRowMajor ? inner : outer,
                                                               begin, count);

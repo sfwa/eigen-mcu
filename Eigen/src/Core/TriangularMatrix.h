@@ -642,7 +642,7 @@ template <typename MatrixType, unsigned int Mode>
 struct unary_evaluator<TriangularView<MatrixType, Mode>, IndexBased> : evaluator<internal::remove_all_t<MatrixType>> {
   typedef TriangularView<MatrixType, Mode> XprType;
   typedef evaluator<internal::remove_all_t<MatrixType>> Base;
-  EIGEN_DEVICE_FUNC unary_evaluator(const XprType& xpr) : Base(xpr.nestedExpression()) {}
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE unary_evaluator(const XprType& xpr) : Base(xpr.nestedExpression()) {}
 };
 
 // Additional assignment kinds:
@@ -676,12 +676,13 @@ class triangular_dense_assignment_kernel
   typedef typename Base::Scalar Scalar;
   typedef typename Base::AssignmentTraits AssignmentTraits;
 
-  EIGEN_DEVICE_FUNC triangular_dense_assignment_kernel(DstEvaluatorType& dst, const SrcEvaluatorType& src,
-                                                       const Functor& func, DstXprType& dstExpr)
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE triangular_dense_assignment_kernel(DstEvaluatorType& dst,
+                                                                             const SrcEvaluatorType& src,
+                                                                             const Functor& func, DstXprType& dstExpr)
       : Base(dst, src, func, dstExpr) {}
 
 #ifdef EIGEN_INTERNAL_DEBUGGING
-  EIGEN_DEVICE_FUNC void assignCoeff(Index row, Index col) {
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE void assignCoeff(Index row, Index col) {
     eigen_internal_assert(row != col);
     Base::assignCoeff(row, col);
   }
@@ -689,7 +690,7 @@ class triangular_dense_assignment_kernel
   using Base::assignCoeff;
 #endif
 
-  EIGEN_DEVICE_FUNC void assignDiagonalCoeff(Index id) {
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE void assignDiagonalCoeff(Index id) {
     if (Mode == UnitDiag && SetOpposite)
       m_functor.assignCoeff(m_dst.coeffRef(id, id), Scalar(1));
     else if (Mode == ZeroDiag && SetOpposite)
@@ -698,7 +699,7 @@ class triangular_dense_assignment_kernel
       Base::assignCoeff(id, id);
   }
 
-  EIGEN_DEVICE_FUNC void assignOppositeCoeff(Index row, Index col) {
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE void assignOppositeCoeff(Index row, Index col) {
     eigen_internal_assert(row != col);
     if (SetOpposite) m_functor.assignCoeff(m_dst.coeffRef(row, col), Scalar(0));
   }

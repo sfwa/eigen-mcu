@@ -614,7 +614,7 @@ EIGEN_DEVICE_FUNC inline bool pselect<bool>(const bool& cond, const bool& a, con
 template <int NaNPropagation, bool IsInteger>
 struct pminmax_impl {
   template <typename Packet, typename Op>
-  static EIGEN_DEVICE_FUNC inline Packet run(const Packet& a, const Packet& b, Op op) {
+  static EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE Packet run(const Packet& a, const Packet& b, Op op) {
     return op(a, b);
   }
 };
@@ -649,7 +649,7 @@ struct pminmax_impl<PropagateNumbers, false> {
 /** \internal \returns the min of \a a and \a b  (coeff-wise).
     If \a a or \b b is NaN, the return value is implementation defined. */
 template <typename Packet>
-EIGEN_DEVICE_FUNC inline Packet pmin(const Packet& a, const Packet& b) {
+EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE Packet pmin(const Packet& a, const Packet& b) {
   return numext::mini(a, b);
 }
 
@@ -667,7 +667,7 @@ EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE double pmin<double>(const double& a, const
 /** \internal \returns the min of \a a and \a b  (coeff-wise).
     NaNPropagation determines the NaN propagation semantics. */
 template <int NaNPropagation, typename Packet>
-EIGEN_DEVICE_FUNC inline Packet pmin(const Packet& a, const Packet& b) {
+EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE Packet pmin(const Packet& a, const Packet& b) {
   constexpr bool IsInteger = NumTraits<typename unpacket_traits<Packet>::type>::IsInteger;
   return pminmax_impl<NaNPropagation, IsInteger>::run(a, b, EIGEN_BINARY_OP_NAN_PROPAGATION(Packet, (pmin<Packet>)));
 }
@@ -686,7 +686,7 @@ EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE double pmin<PropagateNumbers, double>(cons
 /** \internal \returns the max of \a a and \a b  (coeff-wise)
     If \a a or \b b is NaN, the return value is implementation defined. */
 template <typename Packet>
-EIGEN_DEVICE_FUNC inline Packet pmax(const Packet& a, const Packet& b) {
+EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE Packet pmax(const Packet& a, const Packet& b) {
   return numext::maxi(a, b);
 }
 
@@ -704,7 +704,7 @@ EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE double pmax<double>(const double& a, const
 /** \internal \returns the max of \a a and \a b  (coeff-wise).
     NaNPropagation determines the NaN propagation semantics. */
 template <int NaNPropagation, typename Packet>
-EIGEN_DEVICE_FUNC inline Packet pmax(const Packet& a, const Packet& b) {
+EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE Packet pmax(const Packet& a, const Packet& b) {
   constexpr bool IsInteger = NumTraits<typename unpacket_traits<Packet>::type>::IsInteger;
   return pminmax_impl<NaNPropagation, IsInteger>::run(a, b, EIGEN_BINARY_OP_NAN_PROPAGATION(Packet, (pmax<Packet>)));
 }

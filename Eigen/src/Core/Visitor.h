@@ -292,23 +292,24 @@ class visitor_evaluator {
   static constexpr int XprAlignment = Evaluator::Alignment;
   static constexpr int CoeffReadCost = Evaluator::CoeffReadCost;
 
-  EIGEN_DEVICE_FUNC explicit visitor_evaluator(const XprType& xpr) : m_evaluator(xpr), m_xpr(xpr) {}
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE explicit visitor_evaluator(const XprType& xpr)
+      : m_evaluator(xpr), m_xpr(xpr) {}
 
-  EIGEN_DEVICE_FUNC constexpr Index rows() const noexcept { return m_xpr.rows(); }
-  EIGEN_DEVICE_FUNC constexpr Index cols() const noexcept { return m_xpr.cols(); }
-  EIGEN_DEVICE_FUNC constexpr Index size() const noexcept { return m_xpr.size(); }
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE constexpr Index rows() const noexcept { return m_xpr.rows(); }
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE constexpr Index cols() const noexcept { return m_xpr.cols(); }
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE constexpr Index size() const noexcept { return m_xpr.size(); }
   // outer-inner access
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE CoeffReturnType coeff(Index row, Index col) const {
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE CoeffReturnType coeff(Index row, Index col) const {
     return m_evaluator.coeff(row, col);
   }
   template <typename Packet, int Alignment = Unaligned>
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE Packet packet(Index row, Index col) const {
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE Packet packet(Index row, Index col) const {
     return m_evaluator.template packet<Alignment, Packet>(row, col);
   }
   // linear access
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE CoeffReturnType coeff(Index index) const { return m_evaluator.coeff(index); }
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE CoeffReturnType coeff(Index index) const { return m_evaluator.coeff(index); }
   template <typename Packet, int Alignment = XprAlignment>
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE Packet packet(Index index) const {
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE Packet packet(Index index) const {
     return m_evaluator.template packet<Alignment, Packet>(index);
   }
 

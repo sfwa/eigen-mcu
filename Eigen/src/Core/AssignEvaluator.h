@@ -664,56 +664,56 @@ class generic_dense_assignment_kernel {
   typedef copy_using_evaluator_traits<DstEvaluatorTypeT, SrcEvaluatorTypeT, Functor> AssignmentTraits;
   typedef typename AssignmentTraits::PacketType PacketType;
 
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE constexpr generic_dense_assignment_kernel(DstEvaluatorType& dst,
-                                                                                  const SrcEvaluatorType& src,
-                                                                                  const Functor& func,
-                                                                                  DstXprType& dstExpr)
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE constexpr generic_dense_assignment_kernel(DstEvaluatorType& dst,
+                                                                                    const SrcEvaluatorType& src,
+                                                                                    const Functor& func,
+                                                                                    DstXprType& dstExpr)
       : m_dst(dst), m_src(src), m_functor(func), m_dstExpr(dstExpr) {
 #ifdef EIGEN_DEBUG_ASSIGN
     AssignmentTraits::debug();
 #endif
   }
 
-  EIGEN_DEVICE_FUNC constexpr Index size() const noexcept { return m_dstExpr.size(); }
-  EIGEN_DEVICE_FUNC constexpr Index innerSize() const noexcept { return m_dstExpr.innerSize(); }
-  EIGEN_DEVICE_FUNC constexpr Index outerSize() const noexcept { return m_dstExpr.outerSize(); }
-  EIGEN_DEVICE_FUNC constexpr Index rows() const noexcept { return m_dstExpr.rows(); }
-  EIGEN_DEVICE_FUNC constexpr Index cols() const noexcept { return m_dstExpr.cols(); }
-  EIGEN_DEVICE_FUNC constexpr Index outerStride() const noexcept { return m_dstExpr.outerStride(); }
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE constexpr Index size() const noexcept { return m_dstExpr.size(); }
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE constexpr Index innerSize() const noexcept { return m_dstExpr.innerSize(); }
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE constexpr Index outerSize() const noexcept { return m_dstExpr.outerSize(); }
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE constexpr Index rows() const noexcept { return m_dstExpr.rows(); }
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE constexpr Index cols() const noexcept { return m_dstExpr.cols(); }
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE constexpr Index outerStride() const noexcept { return m_dstExpr.outerStride(); }
 
-  EIGEN_DEVICE_FUNC DstEvaluatorType& dstEvaluator() noexcept { return m_dst; }
-  EIGEN_DEVICE_FUNC const SrcEvaluatorType& srcEvaluator() const noexcept { return m_src; }
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE DstEvaluatorType& dstEvaluator() noexcept { return m_dst; }
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE const SrcEvaluatorType& srcEvaluator() const noexcept { return m_src; }
 
   /// Assign src(row,col) to dst(row,col) through the assignment functor.
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE constexpr void assignCoeff(Index row, Index col) {
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE constexpr void assignCoeff(Index row, Index col) {
     m_functor.assignCoeff(m_dst.coeffRef(row, col), m_src.coeff(row, col));
   }
 
   /// \sa assignCoeff(Index,Index)
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE void assignCoeff(Index index) {
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE void assignCoeff(Index index) {
     m_functor.assignCoeff(m_dst.coeffRef(index), m_src.coeff(index));
   }
 
   /// \sa assignCoeff(Index,Index)
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE constexpr void assignCoeffByOuterInner(Index outer, Index inner) {
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE constexpr void assignCoeffByOuterInner(Index outer, Index inner) {
     Index row = rowIndexByOuterInner(outer, inner);
     Index col = colIndexByOuterInner(outer, inner);
     assignCoeff(row, col);
   }
 
   template <int StoreMode, int LoadMode, typename Packet>
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE void assignPacket(Index row, Index col) {
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE void assignPacket(Index row, Index col) {
     m_functor.template assignPacket<StoreMode>(&m_dst.coeffRef(row, col),
                                                m_src.template packet<LoadMode, Packet>(row, col));
   }
 
   template <int StoreMode, int LoadMode, typename Packet>
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE void assignPacket(Index index) {
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE void assignPacket(Index index) {
     m_functor.template assignPacket<StoreMode>(&m_dst.coeffRef(index), m_src.template packet<LoadMode, Packet>(index));
   }
 
   template <int StoreMode, int LoadMode, typename Packet>
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE void assignPacketByOuterInner(Index outer, Index inner) {
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE void assignPacketByOuterInner(Index outer, Index inner) {
     Index row = rowIndexByOuterInner(outer, inner);
     Index col = colIndexByOuterInner(outer, inner);
     assignPacket<StoreMode, LoadMode, Packet>(row, col);
@@ -740,7 +740,7 @@ class generic_dense_assignment_kernel {
     assignPacketSegment<StoreMode, LoadMode, Packet>(row, col, begin, count);
   }
 
-  EIGEN_DEVICE_FUNC static EIGEN_STRONG_INLINE constexpr Index rowIndexByOuterInner(Index outer, Index inner) {
+  EIGEN_DEVICE_FUNC static EIGEN_MCU_INLINE_SIZE constexpr Index rowIndexByOuterInner(Index outer, Index inner) {
     typedef typename DstEvaluatorType::ExpressionTraits Traits;
     return int(Traits::RowsAtCompileTime) == 1          ? 0
            : int(Traits::ColsAtCompileTime) == 1        ? inner
@@ -748,7 +748,7 @@ class generic_dense_assignment_kernel {
                                                         : inner;
   }
 
-  EIGEN_DEVICE_FUNC static EIGEN_STRONG_INLINE constexpr Index colIndexByOuterInner(Index outer, Index inner) {
+  EIGEN_DEVICE_FUNC static EIGEN_MCU_INLINE_SIZE constexpr Index colIndexByOuterInner(Index outer, Index inner) {
     typedef typename DstEvaluatorType::ExpressionTraits Traits;
     return int(Traits::ColsAtCompileTime) == 1          ? 0
            : int(Traits::RowsAtCompileTime) == 1        ? inner
@@ -782,8 +782,10 @@ class restricted_packet_dense_assignment_kernel
   typedef copy_using_evaluator_traits<DstEvaluatorTypeT, SrcEvaluatorTypeT, Functor, 4> AssignmentTraits;
   typedef typename AssignmentTraits::PacketType PacketType;
 
-  EIGEN_DEVICE_FUNC restricted_packet_dense_assignment_kernel(DstEvaluatorTypeT& dst, const SrcEvaluatorTypeT& src,
-                                                              const Functor& func, DstXprType& dstExpr)
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE restricted_packet_dense_assignment_kernel(DstEvaluatorTypeT& dst,
+                                                                                    const SrcEvaluatorTypeT& src,
+                                                                                    const Functor& func,
+                                                                                    DstXprType& dstExpr)
       : Base(dst, src, func, dstExpr) {}
 };
 

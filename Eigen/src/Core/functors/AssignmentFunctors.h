@@ -23,10 +23,10 @@ namespace internal {
  */
 template <typename DstScalar, typename SrcScalar>
 struct assign_op {
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE constexpr void assignCoeff(DstScalar& a, const SrcScalar& b) const { a = b; }
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE constexpr void assignCoeff(DstScalar& a, const SrcScalar& b) const { a = b; }
 
   template <int Alignment, typename Packet>
-  EIGEN_STRONG_INLINE void assignPacket(DstScalar* a, const Packet& b) const {
+  EIGEN_MCU_INLINE_SIZE void assignPacket(DstScalar* a, const Packet& b) const {
     pstoret<DstScalar, Packet, Alignment>(a, b);
   }
 
@@ -56,12 +56,12 @@ struct functor_traits<assign_op<DstScalar, SrcScalar>> {
 template <typename DstScalar, typename SrcScalar, typename Func>
 struct compound_assign_op {
   using traits = functor_traits<compound_assign_op<DstScalar, SrcScalar, Func>>;
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE constexpr void assignCoeff(DstScalar& a, const SrcScalar& b) const {
+  EIGEN_DEVICE_FUNC EIGEN_MCU_INLINE_SIZE constexpr void assignCoeff(DstScalar& a, const SrcScalar& b) const {
     assign_op<DstScalar, DstScalar>().assignCoeff(a, Func().operator()(a, b));
   }
 
   template <int Alignment, typename Packet>
-  EIGEN_STRONG_INLINE void assignPacket(DstScalar* a, const Packet& b) const {
+  EIGEN_MCU_INLINE_SIZE void assignPacket(DstScalar* a, const Packet& b) const {
     assign_op<DstScalar, DstScalar>().template assignPacket<Alignment, Packet>(
         a, Func().packetOp(ploadt<Packet, Alignment>(a), b));
   }

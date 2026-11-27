@@ -97,8 +97,9 @@
 #endif
 #endif
 
-// Force-inline tiny view constructors under -Os so GCC does not outline them,
-// without disturbing -O2 loop unrolling heuristics.
+// Force-inline tiny view constructors and per-element evaluator/assignment
+// wrappers under -Os so GCC does not outline them, without disturbing -O2
+// loop unrolling heuristics.
 #ifndef EIGEN_MCU_INLINE_SIZE
 #if defined(__OPTIMIZE_SIZE__)
 #define EIGEN_MCU_INLINE_SIZE EIGEN_ALWAYS_INLINE
