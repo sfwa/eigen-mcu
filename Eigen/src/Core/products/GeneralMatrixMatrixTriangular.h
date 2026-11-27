@@ -273,7 +273,7 @@ struct general_product_to_triangular_selector<MatrixType, ProductType, UpLo, fal
       SkipDiag = (UpLo & (UnitDiag | ZeroDiag)) != 0
     };
     static EIGEN_STRONG_INLINE void run(MatrixType& mat, ActualLhsRef& actualLhs, ActualRhsRef& actualRhs,
-                                        const Scalar& actualAlpha) {
+                                        const Scalar& actualAlpha, bool beta) {
       Index size = mat.cols();
       if (SkipDiag) size--;
       if (size <= 0) return;
@@ -290,10 +290,12 @@ struct general_product_to_triangular_selector<MatrixType, ProductType, UpLo, fal
                                               RhsIsRowMajor ? RowMajor : ColMajor, IsRowMajor ? RowMajor : ColMajor,
                                               UpLo&(Lower | Upper)>(size, depth, lhs_ptr, actualLhs.outerStride(),
                                                                     rhs_ptr, actualRhs.outerStride(), dst_ptr,
-                                                                    mat.outerStride(), actualAlpha);
+                                                                    mat.outerStride(), actualAlpha, !beta);
           return;
         }
       }
+
+      if (!beta) mat.template triangularView<UpLo>().setZero();
 
       typedef internal::gemm_blocking_space<IsRowMajor ? RowMajor : ColMajor, typename Lhs::Scalar,
                                             typename Rhs::Scalar, MatrixType::MaxColsAtCompileTime,
@@ -327,7 +329,7 @@ struct general_product_to_triangular_selector<MatrixType, ProductType, UpLo, fal
       SkipDiag = (UpLo & (UnitDiag | ZeroDiag)) != 0
     };
     static EIGEN_STRONG_INLINE void run(MatrixType& mat, ActualLhsRef& actualLhs, ActualRhsRef& actualRhs,
-                                        const Scalar& actualAlpha) {
+                                        const Scalar& actualAlpha, bool beta) {
       Index size = mat.cols();
       if (SkipDiag) size--;
       if (size <= 0) return;
@@ -341,7 +343,7 @@ struct general_product_to_triangular_selector<MatrixType, ProductType, UpLo, fal
                                           RhsIsRowMajor ? RowMajor : ColMajor, IsRowMajor ? RowMajor : ColMajor,
                                           UpLo&(Lower | Upper)>(size, depth, lhs_ptr, actualLhs.outerStride(), rhs_ptr,
                                                                 actualRhs.outerStride(), dst_ptr, mat.outerStride(),
-                                                                actualAlpha);
+                                                                actualAlpha, !beta);
     }
   };
 #endif
@@ -362,8 +364,6 @@ struct general_product_to_triangular_selector<MatrixType, ProductType, UpLo, fal
     typename ProductType::Scalar actualAlpha = alpha * LhsBlasTraits::extractScalarFactor(prod.lhs().derived()) *
                                                RhsBlasTraits::extractScalarFactor(prod.rhs().derived());
 
-    if (!beta) mat.template triangularView<UpLo>().setZero();
-
 #if EIGEN_MCU_SMALL_GEMM
     typedef typename ProductType::Scalar Scalar;
     constexpr int kUpLoClean = UpLo & (Lower | Upper);
@@ -383,8 +383,9 @@ struct general_product_to_triangular_selector<MatrixType, ProductType, UpLo, fal
         (ActualLhs_::MaxColsAtCompileTime != Dynamic &&
          ActualLhs_::MaxColsAtCompileTime <= EIGEN_MCU_SMALL_GEMM_MAX_DEPTH);
     mcu_trprod_dispatch<decltype(actualLhs), decltype(actualRhs), kMcuAlwaysSmall, kMcuEligible>::run(
-        mat, actualLhs, actualRhs, actualAlpha);
+        mat, actualLhs, actualRhs, actualAlpha, beta);
 #else
+    if (!beta) mat.template triangularView<UpLo>().setZero();
     enum {
       IsRowMajor = (internal::traits<MatrixType>::Flags & RowMajorBit) ? 1 : 0,
       LhsIsRowMajor = ActualLhs_::Flags & RowMajorBit ? 1 : 0,

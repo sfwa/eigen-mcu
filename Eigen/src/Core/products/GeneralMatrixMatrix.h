@@ -388,8 +388,12 @@ struct generic_product_impl<Lhs, Rhs, DenseShape, DenseShape, GemmProduct>
     if ((rhs.rows() + dst.rows() + dst.cols()) < EIGEN_GEMM_TO_COEFFBASED_THRESHOLD && rhs.rows() > 0)
       lazyproduct::eval_dynamic(dst, lhs, rhs, internal::assign_op<typename Dst::Scalar, Scalar>());
     else {
+#if EIGEN_MCU_SMALL_GEMM
+      scaleAndAddToImpl(dst, lhs, rhs, Scalar(1), /*beta_zero=*/true);
+#else
       dst.setZero();
       scaleAndAddTo(dst, lhs, rhs, Scalar(1));
+#endif
     }
   }
 
@@ -414,7 +418,8 @@ struct generic_product_impl<Lhs, Rhs, DenseShape, DenseShape, GemmProduct>
   struct mcu_gemm_dispatch {
     static EIGEN_STRONG_INLINE void run(Dest& dst, const Lhs& a_lhs, const Rhs& a_rhs,
                                         add_const_on_value_type_t<ActualLhsType>& lhs,
-                                        add_const_on_value_type_t<ActualRhsType>& rhs, const Scalar& actualAlpha) {
+                                        add_const_on_value_type_t<ActualRhsType>& rhs, const Scalar& actualAlpha,
+                                        bool beta_zero) {
       EIGEN_IF_CONSTEXPR(Eligible) {
         if (dst.rows() <= EIGEN_MCU_SMALL_GEMM_THRESHOLD && dst.cols() <= EIGEN_MCU_SMALL_GEMM_THRESHOLD &&
             lhs.cols() <= EIGEN_MCU_SMALL_GEMM_MAX_DEPTH) {
@@ -422,10 +427,12 @@ struct generic_product_impl<Lhs, Rhs, DenseShape, DenseShape, GemmProduct>
                          (ActualRhsTypeCleaned::Flags & RowMajorBit) ? RowMajor : ColMajor,
                          (Dest::Flags & RowMajorBit) ? RowMajor : ColMajor>(
               dst.rows(), dst.cols(), lhs.cols(), lhs.data(), lhs.outerStride(), rhs.data(), rhs.outerStride(),
-              dst.data(), dst.outerStride(), actualAlpha);
+              dst.data(), dst.outerStride(), actualAlpha, beta_zero);
           return;
         }
       }
+
+      if (beta_zero) dst.setZero();
 
       typedef internal::gemm_blocking_space<(Dest::Flags & RowMajorBit) ? RowMajor : ColMajor, LhsScalar, RhsScalar,
                                             Dest::MaxRowsAtCompileTime, Dest::MaxColsAtCompileTime,
@@ -453,18 +460,71 @@ struct generic_product_impl<Lhs, Rhs, DenseShape, DenseShape, GemmProduct>
   struct mcu_gemm_dispatch<Dest, true, true> {
     static EIGEN_STRONG_INLINE void run(Dest& dst, const Lhs&, const Rhs&,
                                         add_const_on_value_type_t<ActualLhsType>& lhs,
-                                        add_const_on_value_type_t<ActualRhsType>& rhs, const Scalar& actualAlpha) {
+                                        add_const_on_value_type_t<ActualRhsType>& rhs, const Scalar& actualAlpha,
+                                        bool beta_zero) {
       mcu_small_gemm<Scalar, (ActualLhsTypeCleaned::Flags & RowMajorBit) ? RowMajor : ColMajor,
                      (ActualRhsTypeCleaned::Flags & RowMajorBit) ? RowMajor : ColMajor,
                      (Dest::Flags & RowMajorBit) ? RowMajor : ColMajor>(
           dst.rows(), dst.cols(), lhs.cols(), lhs.data(), lhs.outerStride(), rhs.data(), rhs.outerStride(),
-          dst.data(), dst.outerStride(), actualAlpha);
+          dst.data(), dst.outerStride(), actualAlpha, beta_zero);
     }
   };
+
+  template <typename Dest>
+  static void scaleAndAddToImpl(Dest& dst, const Lhs& a_lhs, const Rhs& a_rhs, const Scalar& alpha, bool beta_zero) {
+    eigen_assert(dst.rows() == a_lhs.rows() && dst.cols() == a_rhs.cols());
+    if (a_lhs.rows() == 0 || a_rhs.cols() == 0) return;
+    if (a_lhs.cols() == 0) {
+      if (beta_zero) dst.setZero();
+      return;
+    }
+
+    if (dst.cols() == 1) {
+      // Fallback to GEMV if either the lhs or rhs is a runtime vector
+      typename Dest::ColXpr dst_vec(dst.col(0));
+      if (beta_zero) {
+        return internal::generic_product_impl<Lhs, typename Rhs::ConstColXpr, DenseShape, DenseShape,
+                                              GemvProduct>::evalTo(dst_vec, a_lhs, a_rhs.col(0));
+      }
+      return internal::generic_product_impl<Lhs, typename Rhs::ConstColXpr, DenseShape, DenseShape,
+                                            GemvProduct>::scaleAndAddTo(dst_vec, a_lhs, a_rhs.col(0), alpha);
+    } else if (dst.rows() == 1) {
+      // Fallback to GEMV if either the lhs or rhs is a runtime vector
+      typename Dest::RowXpr dst_vec(dst.row(0));
+      if (beta_zero) {
+        return internal::generic_product_impl<typename Lhs::ConstRowXpr, Rhs, DenseShape, DenseShape,
+                                              GemvProduct>::evalTo(dst_vec, a_lhs.row(0), a_rhs);
+      }
+      return internal::generic_product_impl<typename Lhs::ConstRowXpr, Rhs, DenseShape, DenseShape,
+                                            GemvProduct>::scaleAndAddTo(dst_vec, a_lhs.row(0), a_rhs, alpha);
+    }
+
+    add_const_on_value_type_t<ActualLhsType> lhs = LhsBlasTraits::extract(a_lhs);
+    add_const_on_value_type_t<ActualRhsType> rhs = RhsBlasTraits::extract(a_rhs);
+
+    Scalar actualAlpha = combine_scalar_factors(alpha, a_lhs, a_rhs);
+
+    constexpr bool kMcuEligible =
+        is_same<LhsScalar, Scalar>::value && is_same<RhsScalar, Scalar>::value &&
+        is_same<typename Dest::Scalar, Scalar>::value &&
+        (is_same<Scalar, float>::value || is_same<Scalar, double>::value) && !bool(LhsBlasTraits::NeedToConjugate) &&
+        !bool(RhsBlasTraits::NeedToConjugate) && (ActualLhsTypeCleaned::InnerStrideAtCompileTime == 1) &&
+        (ActualRhsTypeCleaned::InnerStrideAtCompileTime == 1) && (Dest::InnerStrideAtCompileTime == 1) &&
+        bool(Dest::Flags & DirectAccessBit);
+    constexpr bool kMcuAlwaysSmall =
+        kMcuEligible &&
+        (Dest::MaxRowsAtCompileTime != Dynamic && Dest::MaxRowsAtCompileTime <= EIGEN_MCU_SMALL_GEMM_THRESHOLD) &&
+        (Dest::MaxColsAtCompileTime != Dynamic && Dest::MaxColsAtCompileTime <= EIGEN_MCU_SMALL_GEMM_THRESHOLD) &&
+        (MaxDepthAtCompileTime != Dynamic && MaxDepthAtCompileTime <= EIGEN_MCU_SMALL_GEMM_MAX_DEPTH);
+    mcu_gemm_dispatch<Dest, kMcuAlwaysSmall, kMcuEligible>::run(dst, a_lhs, a_rhs, lhs, rhs, actualAlpha, beta_zero);
+  }
 #endif
 
   template <typename Dest>
   static void scaleAndAddTo(Dest& dst, const Lhs& a_lhs, const Rhs& a_rhs, const Scalar& alpha) {
+#if EIGEN_MCU_SMALL_GEMM
+    scaleAndAddToImpl(dst, a_lhs, a_rhs, alpha, /*beta_zero=*/false);
+#else
     eigen_assert(dst.rows() == a_lhs.rows() && dst.cols() == a_rhs.cols());
     if (a_lhs.cols() == 0 || a_lhs.rows() == 0 || a_rhs.cols() == 0) return;
 
@@ -485,21 +545,6 @@ struct generic_product_impl<Lhs, Rhs, DenseShape, DenseShape, GemmProduct>
 
     Scalar actualAlpha = combine_scalar_factors(alpha, a_lhs, a_rhs);
 
-#if EIGEN_MCU_SMALL_GEMM
-    constexpr bool kMcuEligible =
-        is_same<LhsScalar, Scalar>::value && is_same<RhsScalar, Scalar>::value &&
-        is_same<typename Dest::Scalar, Scalar>::value &&
-        (is_same<Scalar, float>::value || is_same<Scalar, double>::value) && !bool(LhsBlasTraits::NeedToConjugate) &&
-        !bool(RhsBlasTraits::NeedToConjugate) && (ActualLhsTypeCleaned::InnerStrideAtCompileTime == 1) &&
-        (ActualRhsTypeCleaned::InnerStrideAtCompileTime == 1) && (Dest::InnerStrideAtCompileTime == 1) &&
-        bool(Dest::Flags & DirectAccessBit);
-    constexpr bool kMcuAlwaysSmall =
-        kMcuEligible &&
-        (Dest::MaxRowsAtCompileTime != Dynamic && Dest::MaxRowsAtCompileTime <= EIGEN_MCU_SMALL_GEMM_THRESHOLD) &&
-        (Dest::MaxColsAtCompileTime != Dynamic && Dest::MaxColsAtCompileTime <= EIGEN_MCU_SMALL_GEMM_THRESHOLD) &&
-        (MaxDepthAtCompileTime != Dynamic && MaxDepthAtCompileTime <= EIGEN_MCU_SMALL_GEMM_MAX_DEPTH);
-    mcu_gemm_dispatch<Dest, kMcuAlwaysSmall, kMcuEligible>::run(dst, a_lhs, a_rhs, lhs, rhs, actualAlpha);
-#else
     typedef internal::gemm_blocking_space<(Dest::Flags & RowMajorBit) ? RowMajor : ColMajor, LhsScalar, RhsScalar,
                                           Dest::MaxRowsAtCompileTime, Dest::MaxColsAtCompileTime, MaxDepthAtCompileTime>
         BlockingType;
