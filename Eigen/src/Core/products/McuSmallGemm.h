@@ -1360,6 +1360,168 @@ EIGEN_DONT_INLINE void mcu_small_gemv(Index rows, Index cols, const Scalar* A, I
 }
 
 // ============================================================================
+// Column-/Row-Fused Real Householder Reflectors (ColMajor, zero workspace)
+// ============================================================================
+
+template <typename Scalar>
+EIGEN_DONT_INLINE void mcu_apply_householder_left_colmajor(Index rows, Index cols, Scalar* A, Index lda,
+                                                           const Scalar* v, Scalar tau, Scalar* workspace) {
+  if (rows <= 0 || cols <= 0 || numext::is_exactly_zero(tau)) return;
+  if (rows == 1) {
+    const Scalar s = Scalar(1) - tau;
+    for (Index j = 0; j < cols; ++j) A[j * lda] *= s;
+    return;
+  }
+
+  const Index m1 = rows - 1;
+  // Guard against rare caller where essential vector aliases the target block.
+  const std::uintptr_t a_begin = reinterpret_cast<std::uintptr_t>(A);
+  const std::uintptr_t a_end = reinterpret_cast<std::uintptr_t>(A + (cols - 1) * lda + rows);
+  const std::uintptr_t v_begin = reinterpret_cast<std::uintptr_t>(v);
+  const std::uintptr_t v_end = reinterpret_cast<std::uintptr_t>(v + m1);
+  if (!(v_end <= a_begin || v_begin >= a_end) && workspace != nullptr) {
+    for (Index j = 0; j < cols; ++j) {
+      const Scalar* cj = A + j * lda;
+      Scalar d = cj[0];
+      for (Index i = 0; i < m1; ++i) d += v[i] * cj[i + 1];
+      workspace[j] = tau * d;
+    }
+    for (Index j = 0; j < cols; ++j) {
+      Scalar* cj = A + j * lda;
+      const Scalar s = workspace[j];
+      cj[0] -= s;
+      for (Index i = 0; i < m1; ++i) cj[i + 1] -= v[i] * s;
+    }
+    return;
+  }
+
+  Index j = 0;
+  for (; j + 4 <= cols; j += 4) {
+    Scalar* c0 = A + (j + 0) * lda;
+    Scalar* c1 = A + (j + 1) * lda;
+    Scalar* c2 = A + (j + 2) * lda;
+    Scalar* c3 = A + (j + 3) * lda;
+    Scalar d0 = c0[0], d1 = c1[0], d2 = c2[0], d3 = c3[0];
+    for (Index i = 0; i < m1; ++i) {
+      const Scalar vi = v[i];
+      d0 += vi * c0[i + 1];
+      d1 += vi * c1[i + 1];
+      d2 += vi * c2[i + 1];
+      d3 += vi * c3[i + 1];
+    }
+    d0 *= tau;
+    d1 *= tau;
+    d2 *= tau;
+    d3 *= tau;
+    c0[0] -= d0;
+    c1[0] -= d1;
+    c2[0] -= d2;
+    c3[0] -= d3;
+    for (Index i = 0; i < m1; ++i) {
+      const Scalar vi = v[i];
+      c0[i + 1] -= vi * d0;
+      c1[i + 1] -= vi * d1;
+      c2[i + 1] -= vi * d2;
+      c3[i + 1] -= vi * d3;
+    }
+  }
+  if (j + 2 <= cols) {
+    Scalar* c0 = A + (j + 0) * lda;
+    Scalar* c1 = A + (j + 1) * lda;
+    Scalar d0 = c0[0], d1 = c1[0];
+    for (Index i = 0; i < m1; ++i) {
+      const Scalar vi = v[i];
+      d0 += vi * c0[i + 1];
+      d1 += vi * c1[i + 1];
+    }
+    d0 *= tau;
+    d1 *= tau;
+    c0[0] -= d0;
+    c1[0] -= d1;
+    for (Index i = 0; i < m1; ++i) {
+      const Scalar vi = v[i];
+      c0[i + 1] -= vi * d0;
+      c1[i + 1] -= vi * d1;
+    }
+    j += 2;
+  }
+  if (j < cols) {
+    Scalar* c0 = A + j * lda;
+    Scalar d0 = c0[0];
+    for (Index i = 0; i < m1; ++i) d0 += v[i] * c0[i + 1];
+    d0 *= tau;
+    c0[0] -= d0;
+    for (Index i = 0; i < m1; ++i) c0[i + 1] -= v[i] * d0;
+  }
+}
+
+template <typename Scalar>
+EIGEN_DONT_INLINE void mcu_apply_householder_right_colmajor(Index rows, Index cols, Scalar* A, Index lda,
+                                                            const Scalar* v, Scalar tau, Scalar* workspace) {
+  if (rows <= 0 || cols <= 0 || numext::is_exactly_zero(tau)) return;
+  if (cols == 1) {
+    const Scalar s = Scalar(1) - tau;
+    for (Index i = 0; i < rows; ++i) A[i] *= s;
+    return;
+  }
+
+  const std::uintptr_t a_begin = reinterpret_cast<std::uintptr_t>(A);
+  const std::uintptr_t a_end = reinterpret_cast<std::uintptr_t>(A + (cols - 1) * lda + rows);
+  const std::uintptr_t v_begin = reinterpret_cast<std::uintptr_t>(v);
+  const std::uintptr_t v_end = reinterpret_cast<std::uintptr_t>(v + (cols - 1));
+  if (!(v_end <= a_begin || v_begin >= a_end) && workspace != nullptr) {
+    for (Index i = 0; i < rows; ++i) {
+      Scalar d = A[i];
+      for (Index j = 1; j < cols; ++j) d += A[j * lda + i] * v[j - 1];
+      workspace[i] = tau * d;
+    }
+    for (Index i = 0; i < rows; ++i) A[i] -= workspace[i];
+    for (Index j = 1; j < cols; ++j) {
+      const Scalar vj = v[j - 1];
+      Scalar* cj = A + j * lda;
+      for (Index i = 0; i < rows; ++i) cj[i] -= workspace[i] * vj;
+    }
+    return;
+  }
+
+  Index i = 0;
+  for (; i + 4 <= rows; i += 4) {
+    Scalar d0 = A[i + 0], d1 = A[i + 1], d2 = A[i + 2], d3 = A[i + 3];
+    for (Index j = 1; j < cols; ++j) {
+      const Scalar vj = v[j - 1];
+      const Scalar* cj = A + j * lda + i;
+      d0 += cj[0] * vj;
+      d1 += cj[1] * vj;
+      d2 += cj[2] * vj;
+      d3 += cj[3] * vj;
+    }
+    d0 *= tau;
+    d1 *= tau;
+    d2 *= tau;
+    d3 *= tau;
+    A[i + 0] -= d0;
+    A[i + 1] -= d1;
+    A[i + 2] -= d2;
+    A[i + 3] -= d3;
+    for (Index j = 1; j < cols; ++j) {
+      const Scalar vj = v[j - 1];
+      Scalar* cj = A + j * lda + i;
+      cj[0] -= d0 * vj;
+      cj[1] -= d1 * vj;
+      cj[2] -= d2 * vj;
+      cj[3] -= d3 * vj;
+    }
+  }
+  for (; i < rows; ++i) {
+    Scalar d0 = A[i];
+    for (Index j = 1; j < cols; ++j) d0 += A[j * lda + i] * v[j - 1];
+    d0 *= tau;
+    A[i] -= d0;
+    for (Index j = 1; j < cols; ++j) A[j * lda + i] -= d0 * v[j - 1];
+  }
+}
+
+// ============================================================================
 // Unblocked Pre-Inverted-Diagonal Small TRSM (N <= 32, zero blocking stack)
 // Hoists all_inv_ok out of the RHS loop and blocks OnTheLeft across 4/2 RHS cols.
 // ============================================================================

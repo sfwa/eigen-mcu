@@ -105,10 +105,83 @@ EIGEN_DEVICE_FUNC void MatrixBase<Derived>::makeHouseholder(EssentialPart& essen
  * \sa MatrixBase::makeHouseholder(), MatrixBase::makeHouseholderInPlace(),
  *     MatrixBase::applyHouseholderOnTheRight()
  */
+#if EIGEN_MCU_SMALL_GEMM
+namespace internal {
+
+template <typename Derived, typename EssentialPart, bool Eligible>
+struct mcu_householder_left_dispatch {
+  static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE void run(Derived& mat, const EssentialPart& essential,
+                                                        const typename Derived::Scalar& tau,
+                                                        typename Derived::Scalar* workspace) {
+    if (mat.rows() == 1) {
+      mat *= typename Derived::Scalar(1) - tau;
+    } else if (!numext::is_exactly_zero(tau)) {
+      Map<typename internal::plain_row_type<typename Derived::PlainObject>::type> tmp(workspace, mat.cols());
+      Block<Derived, EssentialPart::SizeAtCompileTime, Derived::ColsAtCompileTime> bottom(mat, 1, 0, mat.rows() - 1,
+                                                                                          mat.cols());
+      tmp.noalias() = essential.adjoint() * bottom;
+      tmp += mat.row(0);
+      mat.row(0) -= tau * tmp;
+      bottom.noalias() -= tau * essential * tmp;
+    }
+  }
+};
+
+template <typename Derived, typename EssentialPart>
+struct mcu_householder_left_dispatch<Derived, EssentialPart, true> {
+  static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE void run(Derived& mat, const EssentialPart& essential,
+                                                        const typename Derived::Scalar& tau,
+                                                        typename Derived::Scalar* workspace) {
+    mcu_apply_householder_left_colmajor<typename Derived::Scalar>(
+        mat.rows(), mat.cols(), mat.data(), mat.outerStride(), essential.data(), tau, workspace);
+  }
+};
+
+template <typename Derived, typename EssentialPart, bool Eligible>
+struct mcu_householder_right_dispatch {
+  static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE void run(Derived& mat, const EssentialPart& essential,
+                                                        const typename Derived::Scalar& tau,
+                                                        typename Derived::Scalar* workspace) {
+    if (mat.cols() == 1) {
+      mat *= typename Derived::Scalar(1) - tau;
+    } else if (!numext::is_exactly_zero(tau)) {
+      Map<typename internal::plain_col_type<typename Derived::PlainObject>::type> tmp(workspace, mat.rows());
+      Block<Derived, Derived::RowsAtCompileTime, EssentialPart::SizeAtCompileTime> right(mat, 0, 1, mat.rows(),
+                                                                                         mat.cols() - 1);
+      tmp.noalias() = right * essential;
+      tmp += mat.col(0);
+      mat.col(0) -= tau * tmp;
+      right.noalias() -= tau * tmp * essential.adjoint();
+    }
+  }
+};
+
+template <typename Derived, typename EssentialPart>
+struct mcu_householder_right_dispatch<Derived, EssentialPart, true> {
+  static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE void run(Derived& mat, const EssentialPart& essential,
+                                                        const typename Derived::Scalar& tau,
+                                                        typename Derived::Scalar* workspace) {
+    mcu_apply_householder_right_colmajor<typename Derived::Scalar>(
+        mat.rows(), mat.cols(), mat.data(), mat.outerStride(), essential.data(), tau, workspace);
+  }
+};
+
+}  // namespace internal
+#endif
+
 template <typename Derived>
 template <typename EssentialPart>
 EIGEN_DEVICE_FUNC void MatrixBase<Derived>::applyHouseholderOnTheLeft(const EssentialPart& essential, const Scalar& tau,
                                                                       Scalar* workspace) {
+#if EIGEN_MCU_SMALL_GEMM
+  constexpr bool kMcuEligible =
+      (internal::is_same<Scalar, float>::value || internal::is_same<Scalar, double>::value) &&
+      internal::is_same<typename EssentialPart::Scalar, Scalar>::value && !bool(Derived::Flags & RowMajorBit) &&
+      bool(Derived::Flags & DirectAccessBit) && (Derived::InnerStrideAtCompileTime == 1) &&
+      bool(EssentialPart::Flags & DirectAccessBit) && (EssentialPart::InnerStrideAtCompileTime == 1);
+  internal::mcu_householder_left_dispatch<Derived, EssentialPart, kMcuEligible>::run(derived(), essential, tau,
+                                                                                     workspace);
+#else
   if (rows() == 1) {
     *this *= Scalar(1) - tau;
   } else if (!numext::is_exactly_zero(tau)) {
@@ -120,6 +193,7 @@ EIGEN_DEVICE_FUNC void MatrixBase<Derived>::applyHouseholderOnTheLeft(const Esse
     this->row(0) -= tau * tmp;
     bottom.noalias() -= tau * essential * tmp;
   }
+#endif
 }
 
 /** Apply the elementary reflector H given by
@@ -141,6 +215,15 @@ template <typename Derived>
 template <typename EssentialPart>
 EIGEN_DEVICE_FUNC void MatrixBase<Derived>::applyHouseholderOnTheRight(const EssentialPart& essential,
                                                                        const Scalar& tau, Scalar* workspace) {
+#if EIGEN_MCU_SMALL_GEMM
+  constexpr bool kMcuEligible =
+      (internal::is_same<Scalar, float>::value || internal::is_same<Scalar, double>::value) &&
+      internal::is_same<typename EssentialPart::Scalar, Scalar>::value && !bool(Derived::Flags & RowMajorBit) &&
+      bool(Derived::Flags & DirectAccessBit) && (Derived::InnerStrideAtCompileTime == 1) &&
+      bool(EssentialPart::Flags & DirectAccessBit) && (EssentialPart::InnerStrideAtCompileTime == 1);
+  internal::mcu_householder_right_dispatch<Derived, EssentialPart, kMcuEligible>::run(derived(), essential, tau,
+                                                                                      workspace);
+#else
   if (cols() == 1) {
     *this *= Scalar(1) - tau;
   } else if (!numext::is_exactly_zero(tau)) {
@@ -152,6 +235,7 @@ EIGEN_DEVICE_FUNC void MatrixBase<Derived>::applyHouseholderOnTheRight(const Ess
     this->col(0) -= tau * tmp;
     right.noalias() -= tau * tmp * essential.adjoint();
   }
+#endif
 }
 
 }  // end namespace Eigen

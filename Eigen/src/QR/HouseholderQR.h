@@ -470,6 +470,20 @@ struct householder_qr_inplace_blocked {
   }
 };
 
+template <typename MatrixQR, typename HCoeffs, bool UseUnblocked>
+struct householder_qr_inplace_dispatch {
+  static EIGEN_STRONG_INLINE void run(MatrixQR& mat, HCoeffs& hCoeffs, typename MatrixQR::Scalar* tempData) {
+    householder_qr_inplace_blocked<MatrixQR, HCoeffs>::run(mat, hCoeffs, 48, tempData);
+  }
+};
+
+template <typename MatrixQR, typename HCoeffs>
+struct householder_qr_inplace_dispatch<MatrixQR, HCoeffs, true> {
+  static EIGEN_STRONG_INLINE void run(MatrixQR& mat, HCoeffs& hCoeffs, typename MatrixQR::Scalar* tempData) {
+    householder_qr_inplace_unblocked(mat, hCoeffs, tempData);
+  }
+};
+
 }  // end namespace internal
 
 #ifndef EIGEN_PARSED_BY_DOXYGEN
@@ -524,7 +538,11 @@ void HouseholderQR<MatrixType>::computeInPlace() {
 
   m_temp.resize(cols);
 
-  internal::householder_qr_inplace_blocked<MatrixType, HCoeffsType>::run(m_qr, m_hCoeffs, 48, m_temp.data());
+  constexpr bool kUseUnblocked =
+      (MatrixType::MaxColsAtCompileTime != Dynamic && MatrixType::MaxColsAtCompileTime <= 48) ||
+      (MatrixType::MaxRowsAtCompileTime != Dynamic && MatrixType::MaxRowsAtCompileTime <= 48);
+  internal::householder_qr_inplace_dispatch<MatrixType, HCoeffsType, kUseUnblocked>::run(m_qr, m_hCoeffs,
+                                                                                         m_temp.data());
 
   m_isInitialized = true;
 }
