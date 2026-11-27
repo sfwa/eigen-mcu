@@ -417,6 +417,126 @@ static void test_all_for_scalar() {
     auto pnan = an.template cwiseMax<Eigen::PropagateNaN>(bn);
     CHECK(std::isnan(pnan(0)) && std::isnan(pnan(1)));
   }
+
+  // 10. New MCU kernels: flat dot unroller, unpacked small GEMV, beta_zero GEMM/SYRK,
+  //     MRx2 tails, symmetric/general triangular double, direct LLT Lower/Upper + fused solve,
+  //     and fused HouseholderQR (28x9, 25x6).
+  {
+    // Flat dot unroller across sizes 5, 7, 8, 17, 22.
+    auto check_dot = [&](auto a, auto b) {
+      T ref = T(0);
+      for (Eigen::Index i = 0; i < a.size(); ++i) ref += a(i) * b(i);
+      CHECK(std::abs(a.dot(b) - ref) <= tol_scale<T>() * T(a.size() + 2));
+    };
+    check_dot(make_mat<T, 5, 1, Eigen::ColMajor>(101), make_mat<T, 5, 1, Eigen::ColMajor>(102));
+    check_dot(make_mat<T, 7, 1, Eigen::ColMajor>(103), make_mat<T, 7, 1, Eigen::ColMajor>(104));
+    check_dot(make_mat<T, 8, 1, Eigen::ColMajor>(105), make_mat<T, 8, 1, Eigen::ColMajor>(106));
+    check_dot(make_mat<T, 17, 1, Eigen::ColMajor>(107), make_mat<T, 17, 1, Eigen::ColMajor>(108));
+    check_dot(make_mat<T, 22, 1, Eigen::ColMajor>(109), make_mat<T, 22, 1, Eigen::ColMajor>(110));
+
+    // Unpacked small GEMV (ColMajor, RowMajor, OnTheLeft, beta_zero over NaN, +=, alpha != 1).
+    auto Ac = make_mat<T, 17, 22, Eigen::ColMajor>(111);
+    auto Ar = make_mat<T, 17, 22, Eigen::RowMajor>(112);
+    auto x22 = make_mat<T, 22, 1, Eigen::ColMajor>(113);
+    auto x17 = make_mat<T, 17, 1, Eigen::ColMajor>(114);
+    Eigen::Matrix<T, 17, 1> y_ref = Eigen::Matrix<T, 17, 1>::Zero();
+    ref_gemm(Ac, x22, y_ref, T(1));
+    Eigen::Matrix<T, 17, 1> y_got;
+    y_got.setConstant(std::numeric_limits<T>::quiet_NaN());
+    y_got.noalias() = Ac * x22;  // beta_zero must overwrite NaN cleanly
+    CHECK((y_got - y_ref).cwiseAbs().maxCoeff() <= tol_scale<T>() * T(25));
+    y_got.noalias() += T(-0.75) * (Ac * x22);
+    CHECK((y_got - T(0.25) * y_ref).cwiseAbs().maxCoeff() <= tol_scale<T>() * T(25));
+
+    Eigen::Matrix<T, 17, 1> yr_ref = Eigen::Matrix<T, 17, 1>::Zero();
+    ref_gemm(Ar, x22, yr_ref, T(1));
+    Eigen::Matrix<T, 17, 1> yr_got;
+    yr_got.setConstant(std::numeric_limits<T>::quiet_NaN());
+    yr_got.noalias() = Ar * x22;
+    CHECK((yr_got - yr_ref).cwiseAbs().maxCoeff() <= tol_scale<T>() * T(25));
+
+    Eigen::Matrix<T, 22, 1> yt_ref = Eigen::Matrix<T, 22, 1>::Zero();
+    ref_gemm(Ac.transpose(), x17, yt_ref, T(1));
+    Eigen::Matrix<T, 22, 1> yt_got;
+    yt_got.setConstant(std::numeric_limits<T>::quiet_NaN());
+    yt_got.noalias() = Ac.transpose() * x17;
+    CHECK((yt_got - yt_ref).cwiseAbs().maxCoeff() <= tol_scale<T>() * T(25));
+
+    // OnTheLeft (row vector * matrix) into strided row of ColMajor matrix.
+    Eigen::Matrix<T, 3, 22> Mrow;
+    Mrow.setConstant(std::numeric_limits<T>::quiet_NaN());
+    Mrow.row(1).noalias() = x17.transpose() * Ac;
+    CHECK((Mrow.row(1).transpose() - yt_ref).cwiseAbs().maxCoeff() <= tol_scale<T>() * T(25));
+
+    // GEMM beta_zero + MRx2 column tail (9x6, 6x6).
+    auto G9 = make_mat<T, 9, 19, Eigen::ColMajor>(120);
+    auto G6 = make_mat<T, 6, 19, Eigen::ColMajor>(121);
+    Eigen::Matrix<T, 9, 6> P_ref = Eigen::Matrix<T, 9, 6>::Zero();
+    ref_gemm(G9, G6.transpose(), P_ref, T(1));
+    Eigen::Matrix<T, 9, 6> P_got;
+    P_got.setConstant(std::numeric_limits<T>::quiet_NaN());
+    P_got.noalias() = G9 * G6.transpose();
+    CHECK((P_got - P_ref).cwiseAbs().maxCoeff() <= tol_scale<T>() * T(25));
+
+    // Symmetric SYRK (beta_zero over NaN) + general non-symmetric triangular product (17x5 * 5x17).
+    auto Jx = make_mat<T, 22, 17, Eigen::ColMajor>(122);
+    Eigen::Matrix<T, 17, 17> S_ref = Eigen::Matrix<T, 17, 17>::Zero();
+    ref_gemm(Jx.transpose(), Jx, S_ref, T(1));
+    Eigen::Matrix<T, 17, 17> S_got;
+    S_got.setConstant(std::numeric_limits<T>::quiet_NaN());
+    S_got.template triangularView<Eigen::Upper>() = Jx.transpose() * Jx;
+    for (int j = 0; j < 17; ++j)
+      for (int i = 0; i <= j; ++i) CHECK(std::abs(S_got(i, j) - S_ref(i, j)) <= tol_scale<T>() * T(30));
+
+    auto Qux = make_mat<T, 5, 17, Eigen::ColMajor>(123);
+    auto Km = make_mat<T, 5, 17, Eigen::ColMajor>(124);
+    Eigen::Matrix<T, 17, 17> T_ref = Eigen::Matrix<T, 17, 17>::Zero();
+    ref_gemm(Qux.transpose(), Km, T_ref, T(1));
+    Eigen::Matrix<T, 17, 17> T_got;
+    T_got.setConstant(std::numeric_limits<T>::quiet_NaN());
+    T_got.template triangularView<Eigen::Upper>() = Qux.transpose() * Km;
+    for (int j = 0; j < 17; ++j)
+      for (int i = 0; i <= j; ++i) CHECK(std::abs(T_got(i, j) - T_ref(i, j)) <= tol_scale<T>() * T(15));
+
+    // LLT Lower/Upper x ColMajor/RowMajor + fused 5x1 and 5x17 solve/solveInPlace + non-SPD.
+    auto M5 = make_mat<T, 5, 5, Eigen::ColMajor>(130);
+    Eigen::Matrix<T, 5, 5> H5 = M5 * M5.transpose() + T(4) * Eigen::Matrix<T, 5, 5>::Identity();
+    auto b5 = make_mat<T, 5, 1, Eigen::ColMajor>(131);
+    auto B5 = make_mat<T, 5, 17, Eigen::ColMajor>(132);
+
+    Eigen::LLT<Eigen::Matrix<T, 5, 5>, Eigen::Lower> llt_cl(H5);
+    CHECK(llt_cl.info() == Eigen::Success);
+    CHECK((H5 * llt_cl.solve(b5) - b5).cwiseAbs().maxCoeff() <= tol_scale<T>() * T(10));
+    Eigen::Matrix<T, 5, 17> X5 = B5;
+    llt_cl.solveInPlace(X5);
+    CHECK((H5 * X5 - B5).cwiseAbs().maxCoeff() <= tol_scale<T>() * T(10));
+
+    Eigen::LLT<Eigen::Matrix<T, 5, 5>, Eigen::Upper> llt_cu(H5);
+    CHECK(llt_cu.info() == Eigen::Success);
+    CHECK((H5 * llt_cu.solve(b5) - b5).cwiseAbs().maxCoeff() <= tol_scale<T>() * T(10));
+    CHECK((H5 * llt_cu.solve(B5) - B5).cwiseAbs().maxCoeff() <= tol_scale<T>() * T(10));
+
+    Eigen::Matrix<T, 5, 5, Eigen::RowMajor> H5r = H5;
+    Eigen::LLT<Eigen::Matrix<T, 5, 5, Eigen::RowMajor>, Eigen::Lower> llt_rl(H5r);
+    CHECK(llt_rl.info() == Eigen::Success);
+    CHECK((H5 * llt_rl.solve(B5) - B5).cwiseAbs().maxCoeff() <= tol_scale<T>() * T(10));
+
+    Eigen::LLT<Eigen::Matrix<T, 5, 5, Eigen::RowMajor>, Eigen::Upper> llt_ru(H5r);
+    CHECK(llt_ru.info() == Eigen::Success);
+    CHECK((H5 * llt_ru.solve(B5) - B5).cwiseAbs().maxCoeff() <= tol_scale<T>() * T(10));
+
+    Eigen::Matrix<T, 5, 5> bad = H5;
+    bad(2, 2) = T(-1);
+    Eigen::LLT<Eigen::Matrix<T, 5, 5>> llt_bad(bad);
+    CHECK(llt_bad.info() == Eigen::NumericalIssue);
+
+    // Tall HouseholderQR matching SR-UKF shapes (28x9, 25x6).
+    auto Q28 = make_mat<T, 28, 9, Eigen::ColMajor>(140);
+    Eigen::HouseholderQR<Eigen::Matrix<T, 28, 9>> qr28(Q28);
+    Eigen::Matrix<T, 28, 28> Qm = qr28.householderQ();
+    Eigen::Matrix<T, 28, 9> Rm = qr28.matrixQR().template triangularView<Eigen::Upper>();
+    CHECK((Qm * Rm - Q28).cwiseAbs().maxCoeff() <= tol_scale<T>() * T(35));
+  }
 }
 
 int main() {

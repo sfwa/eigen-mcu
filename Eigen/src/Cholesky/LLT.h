@@ -289,11 +289,98 @@ static Index llt_rank_update_lower(MatrixType& mat, const VectorType& vec,
 template <typename Scalar>
 struct llt_inplace<Scalar, Lower> {
   typedef typename NumTraits<Scalar>::Real RealScalar;
+
+#if EIGEN_MCU_SMALL_GEMM
+  template <typename MatrixType, bool Eligible, bool IsRowMajor>
+  struct mcu_llt_unblocked_dispatch {
+    static EIGEN_STRONG_INLINE Index run(MatrixType& mat) {
+      using std::sqrt;
+      const Index size = mat.rows();
+      for (Index k = 0; k < size; ++k) {
+        Index rs = size - k - 1;  // remaining size
+
+        Block<MatrixType, Dynamic, 1> A21(mat, k + 1, k, rs, 1);
+        Block<MatrixType, 1, Dynamic> A10(mat, k, 0, 1, k);
+        Block<MatrixType, Dynamic, Dynamic> A20(mat, k + 1, 0, rs, k);
+
+        RealScalar x = numext::real(mat.coeff(k, k));
+        if (k > 0) x -= A10.squaredNorm();
+        if (x <= RealScalar(0)) return k;
+        mat.coeffRef(k, k) = x = sqrt(x);
+        if (k > 0 && rs > 0) A21.noalias() -= A20 * A10.adjoint();
+        if (rs > 0) {
+          const RealScalar inv_x = RealScalar(1) / x;
+          if (numext::isfinite(inv_x) && inv_x != RealScalar(0))
+            A21 *= inv_x;
+          else
+            A21 /= x;
+        }
+      }
+      return -1;
+    }
+  };
+
+  template <typename MatrixType>
+  struct mcu_llt_unblocked_dispatch<MatrixType, true, false> {
+    static EIGEN_STRONG_INLINE Index run(MatrixType& mat) {
+      return mcu_small_llt_lower_colmajor<Scalar>(mat.rows(), mat.data(), mat.outerStride());
+    }
+  };
+
+  template <typename MatrixType>
+  struct mcu_llt_unblocked_dispatch<MatrixType, true, true> {
+    static EIGEN_STRONG_INLINE Index run(MatrixType& mat) {
+      if (mat.rows() <= EIGEN_MCU_SMALL_TRSM_THRESHOLD) {
+        return mcu_small_llt_upper_colmajor<Scalar>(mat.rows(), mat.data(), mat.outerStride());
+      }
+      return mcu_llt_unblocked_dispatch<MatrixType, false, true>::run(mat);
+    }
+  };
+
+  template <typename MatrixType, bool AlwaysSmall>
+  struct mcu_llt_blocked_dispatch {
+    static EIGEN_STRONG_INLINE Index run(MatrixType& m) {
+      Index size = m.rows();
+      if (size < 32) return unblocked(m);
+
+      Index blockSize = size / 8;
+      blockSize = (blockSize / 16) * 16;
+      blockSize = (std::min)((std::max)(blockSize, Index(8)), Index(128));
+
+      for (Index k = 0; k < size; k += blockSize) {
+        Index bs = (std::min)(blockSize, size - k);
+        Index rs = size - k - bs;
+        Block<MatrixType, Dynamic, Dynamic> A11(m, k, k, bs, bs);
+        Block<MatrixType, Dynamic, Dynamic> A21(m, k + bs, k, rs, bs);
+        Block<MatrixType, Dynamic, Dynamic> A22(m, k + bs, k + bs, rs, rs);
+
+        Index ret;
+        if ((ret = unblocked(A11)) >= 0) return k + ret;
+        if (rs > 0) A11.adjoint().template triangularView<Upper>().template solveInPlace<OnTheRight>(A21);
+        if (rs > 0)
+          A22.template selfadjointView<Lower>().rankUpdate(A21, typename NumTraits<RealScalar>::Literal(-1));
+      }
+      return -1;
+    }
+  };
+
+  template <typename MatrixType>
+  struct mcu_llt_blocked_dispatch<MatrixType, true> {
+    static EIGEN_STRONG_INLINE Index run(MatrixType& m) { return unblocked(m); }
+  };
+#endif
+
   template <typename MatrixType>
   static Index unblocked(MatrixType& mat) {
-    using std::sqrt;
-
     eigen_assert(mat.rows() == mat.cols());
+#if EIGEN_MCU_SMALL_GEMM
+    constexpr bool kMcuEligible =
+        (is_same<Scalar, float>::value || is_same<Scalar, double>::value) &&
+        is_same<typename MatrixType::Scalar, Scalar>::value && bool(MatrixType::Flags & DirectAccessBit) &&
+        (MatrixType::InnerStrideAtCompileTime == 1);
+    return mcu_llt_unblocked_dispatch<MatrixType, kMcuEligible, bool(MatrixType::Flags & RowMajorBit)>::run(mat);
+#else
+    using std::sqrt;
     const Index size = mat.rows();
     for (Index k = 0; k < size; ++k) {
       Index rs = size - k - 1;  // remaining size
@@ -316,11 +403,17 @@ struct llt_inplace<Scalar, Lower> {
       }
     }
     return -1;
+#endif
   }
 
   template <typename MatrixType>
   static Index blocked(MatrixType& m) {
     eigen_assert(m.rows() == m.cols());
+#if EIGEN_MCU_SMALL_GEMM
+    constexpr bool kAlwaysSmall =
+        (MatrixType::MaxRowsAtCompileTime != Dynamic && MatrixType::MaxRowsAtCompileTime < 32);
+    return mcu_llt_blocked_dispatch<MatrixType, kAlwaysSmall>::run(m);
+#else
     Index size = m.rows();
     if (size < 32) return unblocked(m);
 
@@ -347,6 +440,7 @@ struct llt_inplace<Scalar, Lower> {
                                                          typename NumTraits<RealScalar>::Literal(-1));  // bottleneck
     }
     return -1;
+#endif
   }
 
   template <typename MatrixType, typename VectorType>
@@ -441,6 +535,55 @@ LLT<MatrixType_, UpLo_>& LLT<MatrixType_, UpLo_>::rankUpdate(const VectorType& v
   return *this;
 }
 
+#if EIGEN_MCU_SMALL_GEMM
+namespace internal {
+
+template <typename LLTType, typename DstType, bool Conjugate, bool AlwaysSmall, bool Eligible>
+struct mcu_llt_solve_dispatch {
+  static EIGEN_STRONG_INLINE void run(const LLTType& llt, DstType& dst) {
+    typedef typename LLTType::MatrixType MatrixType;
+    typedef typename MatrixType::Scalar Scalar;
+    EIGEN_IF_CONSTEXPR(Eligible) {
+      if (llt.matrixLLT().rows() <= EIGEN_MCU_SMALL_TRSM_THRESHOLD) {
+        constexpr bool IsLowerColLayout =
+            (bool(MatrixType::Flags & RowMajorBit) == (int(LLTType::UpLo) == int(Upper)));
+        const Index ldx = (DstType::ColsAtCompileTime == 1) ? dst.rows() : dst.outerStride();
+        EIGEN_IF_CONSTEXPR(IsLowerColLayout) {
+          mcu_small_llt_solve_lower_colmajor<Scalar>(llt.matrixLLT().rows(), dst.cols(), llt.matrixLLT().data(),
+                                                     llt.matrixLLT().outerStride(), dst.data(), ldx);
+        } else {
+          mcu_small_llt_solve_upper_colmajor<Scalar>(llt.matrixLLT().rows(), dst.cols(), llt.matrixLLT().data(),
+                                                     llt.matrixLLT().outerStride(), dst.data(), ldx);
+        }
+        return;
+      }
+    }
+    llt.matrixL().template conjugateIf<!Conjugate>().solveInPlace(dst);
+    llt.matrixU().template conjugateIf<!Conjugate>().solveInPlace(dst);
+  }
+};
+
+template <typename LLTType, typename DstType, bool Conjugate>
+struct mcu_llt_solve_dispatch<LLTType, DstType, Conjugate, true, true> {
+  static EIGEN_STRONG_INLINE void run(const LLTType& llt, DstType& dst) {
+    typedef typename LLTType::MatrixType MatrixType;
+    typedef typename MatrixType::Scalar Scalar;
+    constexpr bool IsLowerColLayout =
+        (bool(MatrixType::Flags & RowMajorBit) == (int(LLTType::UpLo) == int(Upper)));
+    const Index ldx = (DstType::ColsAtCompileTime == 1) ? dst.rows() : dst.outerStride();
+    EIGEN_IF_CONSTEXPR(IsLowerColLayout) {
+      mcu_small_llt_solve_lower_colmajor<Scalar>(llt.matrixLLT().rows(), dst.cols(), llt.matrixLLT().data(),
+                                                 llt.matrixLLT().outerStride(), dst.data(), ldx);
+    } else {
+      mcu_small_llt_solve_upper_colmajor<Scalar>(llt.matrixLLT().rows(), dst.cols(), llt.matrixLLT().data(),
+                                                 llt.matrixLLT().outerStride(), dst.data(), ldx);
+    }
+  }
+};
+
+}  // namespace internal
+#endif
+
 #ifndef EIGEN_PARSED_BY_DOXYGEN
 template <typename MatrixType_, int UpLo_>
 template <typename RhsType, typename DstType>
@@ -453,8 +596,21 @@ template <bool Conjugate, typename RhsType, typename DstType>
 void LLT<MatrixType_, UpLo_>::_solve_impl_transposed(const RhsType& rhs, DstType& dst) const {
   dst = rhs;
 
+#if EIGEN_MCU_SMALL_GEMM
+  constexpr bool kMcuEligible =
+      (internal::is_same<Scalar, float>::value || internal::is_same<Scalar, double>::value) &&
+      internal::is_same<typename DstType::Scalar, Scalar>::value && bool(MatrixType::Flags & DirectAccessBit) &&
+      (MatrixType::InnerStrideAtCompileTime == 1) && bool(DstType::Flags & DirectAccessBit) &&
+      (DstType::InnerStrideAtCompileTime == 1) && (!bool(DstType::Flags & RowMajorBit) || DstType::ColsAtCompileTime == 1);
+  constexpr bool kMcuAlwaysSmall =
+      kMcuEligible &&
+      (MatrixType::MaxRowsAtCompileTime != Dynamic && MatrixType::MaxRowsAtCompileTime <= EIGEN_MCU_SMALL_TRSM_THRESHOLD);
+  internal::mcu_llt_solve_dispatch<LLT<MatrixType_, UpLo_>, DstType, Conjugate, kMcuAlwaysSmall, kMcuEligible>::run(
+      *this, dst);
+#else
   matrixL().template conjugateIf<!Conjugate>().solveInPlace(dst);
   matrixU().template conjugateIf<!Conjugate>().solveInPlace(dst);
+#endif
 }
 #endif
 
@@ -476,8 +632,22 @@ template <typename Derived>
 void LLT<MatrixType, UpLo_>::solveInPlace(const MatrixBase<Derived>& bAndX) const {
   eigen_assert(m_isInitialized && "LLT is not initialized.");
   eigen_assert(m_matrix.rows() == bAndX.rows());
+#if EIGEN_MCU_SMALL_GEMM
+  Derived& dst = bAndX.const_cast_derived();
+  constexpr bool kMcuEligible =
+      (internal::is_same<Scalar, float>::value || internal::is_same<Scalar, double>::value) &&
+      internal::is_same<typename Derived::Scalar, Scalar>::value && bool(MatrixType::Flags & DirectAccessBit) &&
+      (MatrixType::InnerStrideAtCompileTime == 1) && bool(Derived::Flags & DirectAccessBit) &&
+      (Derived::InnerStrideAtCompileTime == 1) && (!bool(Derived::Flags & RowMajorBit) || Derived::ColsAtCompileTime == 1);
+  constexpr bool kMcuAlwaysSmall =
+      kMcuEligible &&
+      (MatrixType::MaxRowsAtCompileTime != Dynamic && MatrixType::MaxRowsAtCompileTime <= EIGEN_MCU_SMALL_TRSM_THRESHOLD);
+  internal::mcu_llt_solve_dispatch<LLT<MatrixType, UpLo_>, Derived, true, kMcuAlwaysSmall, kMcuEligible>::run(*this,
+                                                                                                              dst);
+#else
   matrixL().solveInPlace(bAndX);
   matrixU().solveInPlace(bAndX);
+#endif
 }
 
 /** \returns the matrix represented by the decomposition,

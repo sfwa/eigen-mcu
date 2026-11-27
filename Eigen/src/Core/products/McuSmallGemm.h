@@ -1522,6 +1522,331 @@ EIGEN_DONT_INLINE void mcu_apply_householder_right_colmajor(Index rows, Index co
 }
 
 // ============================================================================
+// Direct Small-Matrix Cholesky Factorization & Fused LLT Solve (N <= 32)
+// ============================================================================
+
+template <typename Scalar>
+EIGEN_DONT_INLINE Index mcu_small_llt_lower_colmajor(Index n, Scalar* A, Index lda) {
+  using std::sqrt;
+  for (Index k = 0; k < n; ++k) {
+    Scalar* col_k = A + k * lda;
+    Scalar diag = col_k[k];
+    if (!(diag > Scalar(0))) return k;
+    diag = sqrt(diag);
+    col_k[k] = diag;
+    const Index rs = n - k - 1;
+    if (rs == 0) continue;
+
+    const Scalar inv = Scalar(1) / diag;
+    if (numext::isfinite(inv) && inv != Scalar(0)) {
+      for (Index i = k + 1; i < n; ++i) col_k[i] *= inv;
+    } else {
+      for (Index i = k + 1; i < n; ++i) col_k[i] /= diag;
+    }
+
+    // 2-column fused trailing rank-1 downdate (100% unit-stride ColMajor).
+    Index j = k + 1;
+    for (; j + 2 <= n; j += 2) {
+      Scalar* cj0 = A + j * lda;
+      Scalar* cj1 = A + (j + 1) * lda;
+      const Scalar lj0 = col_k[j];
+      const Scalar lj1 = col_k[j + 1];
+      cj0[j] -= lj0 * lj0;
+      for (Index i = j + 1; i < n; ++i) {
+        const Scalar li = col_k[i];
+        cj0[i] -= li * lj0;
+        cj1[i] -= li * lj1;
+      }
+    }
+    if (j < n) {
+      Scalar* cj = A + j * lda;
+      const Scalar lj = col_k[j];
+      for (Index i = j; i < n; ++i) cj[i] -= col_k[i] * lj;
+    }
+  }
+  return -1;
+}
+
+template <typename Scalar>
+EIGEN_DONT_INLINE Index mcu_small_llt_upper_colmajor(Index n, Scalar* A, Index lda) {
+  using std::sqrt;
+  Scalar inv_d[EIGEN_MCU_SMALL_TRSM_THRESHOLD];
+  for (Index k = 0; k < n; ++k) {
+    Scalar* col_k = A + k * lda;
+    Scalar sum_sq = Scalar(0);
+    for (Index j = 0; j < k; ++j) {
+      const Scalar* col_j = A + j * lda;
+      Scalar s = col_k[j];
+      for (Index i = 0; i < j; ++i) s -= col_j[i] * col_k[i];
+      const Scalar inv_j = inv_d[j];
+      const Scalar ujk = (numext::isfinite(inv_j) && inv_j != Scalar(0)) ? (s * inv_j) : (s / col_j[j]);
+      col_k[j] = ujk;
+      sum_sq += ujk * ujk;
+    }
+    Scalar diag = col_k[k] - sum_sq;
+    if (!(diag > Scalar(0))) return k;
+    diag = sqrt(diag);
+    col_k[k] = diag;
+    inv_d[k] = Scalar(1) / diag;
+  }
+  return -1;
+}
+
+// Fused L * L^T * X = B in-place (L is ColMajor Lower, X is n x nrhs ColMajor).
+// Pre-inverts L's diagonal ONCE and shares inv_d across L and L^T with 4-col/2-col RHS blocking.
+template <typename Scalar>
+EIGEN_DONT_INLINE void mcu_small_llt_solve_lower_colmajor(Index n, Index nrhs, const Scalar* L, Index ldl,
+                                                          Scalar* EIGEN_RESTRICT X, Index ldx) {
+  if (n <= 0 || nrhs <= 0) return;
+
+  Scalar inv_d[EIGEN_MCU_SMALL_TRSM_THRESHOLD];
+  bool all_inv_ok = true;
+  for (Index i = 0; i < n; ++i) {
+    const Scalar inv = Scalar(1) / L[i * ldl + i];
+    inv_d[i] = inv;
+    if (!(numext::isfinite(inv) && inv != Scalar(0))) all_inv_ok = false;
+  }
+
+  if (all_inv_ok) {
+    Index j = 0;
+    for (; j + 4 <= nrhs; j += 4) {
+      Scalar* x0 = X + (j + 0) * ldx;
+      Scalar* x1 = X + (j + 1) * ldx;
+      Scalar* x2 = X + (j + 2) * ldx;
+      Scalar* x3 = X + (j + 3) * ldx;
+      // Forward: L * Y = B
+      for (Index k = 0; k < n; ++k) {
+        const Scalar inv = inv_d[k];
+        const Scalar v0 = x0[k] * inv;
+        const Scalar v1 = x1[k] * inv;
+        const Scalar v2 = x2[k] * inv;
+        const Scalar v3 = x3[k] * inv;
+        x0[k] = v0;
+        x1[k] = v1;
+        x2[k] = v2;
+        x3[k] = v3;
+        const Scalar* col_k = L + k * ldl;
+        for (Index i = k + 1; i < n; ++i) {
+          const Scalar lik = col_k[i];
+          x0[i] -= lik * v0;
+          x1[i] -= lik * v1;
+          x2[i] -= lik * v2;
+          x3[i] -= lik * v3;
+        }
+      }
+      // Backward: L^T * X = Y
+      for (Index k = n - 1; k >= 0; --k) {
+        Scalar s0 = x0[k], s1 = x1[k], s2 = x2[k], s3 = x3[k];
+        const Scalar* col_k = L + k * ldl;
+        for (Index i = k + 1; i < n; ++i) {
+          const Scalar lik = col_k[i];
+          s0 -= lik * x0[i];
+          s1 -= lik * x1[i];
+          s2 -= lik * x2[i];
+          s3 -= lik * x3[i];
+        }
+        const Scalar inv = inv_d[k];
+        x0[k] = s0 * inv;
+        x1[k] = s1 * inv;
+        x2[k] = s2 * inv;
+        x3[k] = s3 * inv;
+      }
+    }
+    if (j + 2 <= nrhs) {
+      Scalar* x0 = X + (j + 0) * ldx;
+      Scalar* x1 = X + (j + 1) * ldx;
+      for (Index k = 0; k < n; ++k) {
+        const Scalar inv = inv_d[k];
+        const Scalar v0 = x0[k] * inv;
+        const Scalar v1 = x1[k] * inv;
+        x0[k] = v0;
+        x1[k] = v1;
+        const Scalar* col_k = L + k * ldl;
+        for (Index i = k + 1; i < n; ++i) {
+          const Scalar lik = col_k[i];
+          x0[i] -= lik * v0;
+          x1[i] -= lik * v1;
+        }
+      }
+      for (Index k = n - 1; k >= 0; --k) {
+        Scalar s0 = x0[k], s1 = x1[k];
+        const Scalar* col_k = L + k * ldl;
+        for (Index i = k + 1; i < n; ++i) {
+          const Scalar lik = col_k[i];
+          s0 -= lik * x0[i];
+          s1 -= lik * x1[i];
+        }
+        const Scalar inv = inv_d[k];
+        x0[k] = s0 * inv;
+        x1[k] = s1 * inv;
+      }
+      j += 2;
+    }
+    if (j < nrhs) {
+      Scalar* x = X + j * ldx;
+      for (Index k = 0; k < n; ++k) {
+        const Scalar xk = x[k] * inv_d[k];
+        x[k] = xk;
+        const Scalar* col_k = L + k * ldl;
+        for (Index i = k + 1; i < n; ++i) x[i] -= col_k[i] * xk;
+      }
+      for (Index k = n - 1; k >= 0; --k) {
+        Scalar s = x[k];
+        const Scalar* col_k = L + k * ldl;
+        for (Index i = k + 1; i < n; ++i) s -= col_k[i] * x[i];
+        x[k] = s * inv_d[k];
+      }
+    }
+    return;
+  }
+
+  // Guarded fallback when any diagonal reciprocal underflowed/overflowed.
+  for (Index j = 0; j < nrhs; ++j) {
+    Scalar* x = X + j * ldx;
+    for (Index k = 0; k < n; ++k) {
+      const Scalar* col_k = L + k * ldl;
+      const Scalar inv = inv_d[k];
+      const Scalar xk = (numext::isfinite(inv) && inv != Scalar(0)) ? (x[k] * inv) : (x[k] / col_k[k]);
+      x[k] = xk;
+      for (Index i = k + 1; i < n; ++i) x[i] -= col_k[i] * xk;
+    }
+    for (Index k = n - 1; k >= 0; --k) {
+      const Scalar* col_k = L + k * ldl;
+      Scalar s = x[k];
+      for (Index i = k + 1; i < n; ++i) s -= col_k[i] * x[i];
+      const Scalar inv = inv_d[k];
+      x[k] = (numext::isfinite(inv) && inv != Scalar(0)) ? (s * inv) : (s / col_k[k]);
+    }
+  }
+}
+
+// Fused U^T * U * X = B in-place (U is ColMajor Upper, X is n x nrhs ColMajor).
+template <typename Scalar>
+EIGEN_DONT_INLINE void mcu_small_llt_solve_upper_colmajor(Index n, Index nrhs, const Scalar* U, Index ldu,
+                                                          Scalar* EIGEN_RESTRICT X, Index ldx) {
+  if (n <= 0 || nrhs <= 0) return;
+
+  Scalar inv_d[EIGEN_MCU_SMALL_TRSM_THRESHOLD];
+  bool all_inv_ok = true;
+  for (Index i = 0; i < n; ++i) {
+    const Scalar inv = Scalar(1) / U[i * ldu + i];
+    inv_d[i] = inv;
+    if (!(numext::isfinite(inv) && inv != Scalar(0))) all_inv_ok = false;
+  }
+
+  if (all_inv_ok) {
+    Index j = 0;
+    for (; j + 4 <= nrhs; j += 4) {
+      Scalar* x0 = X + (j + 0) * ldx;
+      Scalar* x1 = X + (j + 1) * ldx;
+      Scalar* x2 = X + (j + 2) * ldx;
+      Scalar* x3 = X + (j + 3) * ldx;
+      // Forward: U^T * Y = B
+      for (Index k = 0; k < n; ++k) {
+        Scalar s0 = x0[k], s1 = x1[k], s2 = x2[k], s3 = x3[k];
+        const Scalar* col_k = U + k * ldu;
+        for (Index i = 0; i < k; ++i) {
+          const Scalar uik = col_k[i];
+          s0 -= uik * x0[i];
+          s1 -= uik * x1[i];
+          s2 -= uik * x2[i];
+          s3 -= uik * x3[i];
+        }
+        const Scalar inv = inv_d[k];
+        x0[k] = s0 * inv;
+        x1[k] = s1 * inv;
+        x2[k] = s2 * inv;
+        x3[k] = s3 * inv;
+      }
+      // Backward: U * X = Y
+      for (Index k = n - 1; k >= 0; --k) {
+        const Scalar inv = inv_d[k];
+        const Scalar v0 = x0[k] * inv;
+        const Scalar v1 = x1[k] * inv;
+        const Scalar v2 = x2[k] * inv;
+        const Scalar v3 = x3[k] * inv;
+        x0[k] = v0;
+        x1[k] = v1;
+        x2[k] = v2;
+        x3[k] = v3;
+        const Scalar* col_k = U + k * ldu;
+        for (Index i = 0; i < k; ++i) {
+          const Scalar uik = col_k[i];
+          x0[i] -= uik * v0;
+          x1[i] -= uik * v1;
+          x2[i] -= uik * v2;
+          x3[i] -= uik * v3;
+        }
+      }
+    }
+    if (j + 2 <= nrhs) {
+      Scalar* x0 = X + (j + 0) * ldx;
+      Scalar* x1 = X + (j + 1) * ldx;
+      for (Index k = 0; k < n; ++k) {
+        Scalar s0 = x0[k], s1 = x1[k];
+        const Scalar* col_k = U + k * ldu;
+        for (Index i = 0; i < k; ++i) {
+          const Scalar uik = col_k[i];
+          s0 -= uik * x0[i];
+          s1 -= uik * x1[i];
+        }
+        const Scalar inv = inv_d[k];
+        x0[k] = s0 * inv;
+        x1[k] = s1 * inv;
+      }
+      for (Index k = n - 1; k >= 0; --k) {
+        const Scalar inv = inv_d[k];
+        const Scalar v0 = x0[k] * inv;
+        const Scalar v1 = x1[k] * inv;
+        x0[k] = v0;
+        x1[k] = v1;
+        const Scalar* col_k = U + k * ldu;
+        for (Index i = 0; i < k; ++i) {
+          const Scalar uik = col_k[i];
+          x0[i] -= uik * v0;
+          x1[i] -= uik * v1;
+        }
+      }
+      j += 2;
+    }
+    if (j < nrhs) {
+      Scalar* x = X + j * ldx;
+      for (Index k = 0; k < n; ++k) {
+        Scalar s = x[k];
+        const Scalar* col_k = U + k * ldu;
+        for (Index i = 0; i < k; ++i) s -= col_k[i] * x[i];
+        x[k] = s * inv_d[k];
+      }
+      for (Index k = n - 1; k >= 0; --k) {
+        const Scalar xk = x[k] * inv_d[k];
+        x[k] = xk;
+        const Scalar* col_k = U + k * ldu;
+        for (Index i = 0; i < k; ++i) x[i] -= col_k[i] * xk;
+      }
+    }
+    return;
+  }
+
+  for (Index j = 0; j < nrhs; ++j) {
+    Scalar* x = X + j * ldx;
+    for (Index k = 0; k < n; ++k) {
+      const Scalar* col_k = U + k * ldu;
+      Scalar s = x[k];
+      for (Index i = 0; i < k; ++i) s -= col_k[i] * x[i];
+      const Scalar inv = inv_d[k];
+      x[k] = (numext::isfinite(inv) && inv != Scalar(0)) ? (s * inv) : (s / col_k[k]);
+    }
+    for (Index k = n - 1; k >= 0; --k) {
+      const Scalar* col_k = U + k * ldu;
+      const Scalar inv = inv_d[k];
+      const Scalar xk = (numext::isfinite(inv) && inv != Scalar(0)) ? (x[k] * inv) : (x[k] / col_k[k]);
+      x[k] = xk;
+      for (Index i = 0; i < k; ++i) x[i] -= col_k[i] * xk;
+    }
+  }
+}
+
+// ============================================================================
 // Unblocked Pre-Inverted-Diagonal Small TRSM (N <= 32, zero blocking stack)
 // Hoists all_inv_ok out of the RHS loop and blocks OnTheLeft across 4/2 RHS cols.
 // ============================================================================
