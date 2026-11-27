@@ -37,7 +37,7 @@ jobs:
         if: matrix.config.install_clang18
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang-18
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Test host correctness (C++17/C++14, -O2/-O3/-Os, SMALL_GEMM=0 & 1, EIGEN_NO_MALLOC)
         env:
@@ -80,10 +80,10 @@ jobs:
           cmake -S . -B build-cmake \
             -DBUILD_TESTING=OFF -DEIGEN_BUILD_BLAS=OFF -DEIGEN_BUILD_LAPACK=OFF \
             -DEIGEN_BUILD_DOC=OFF -DEIGEN_BUILD_DEMOS=OFF \
-            -DCMAKE_INSTALL_PREFIX="$PWD/install"
+            -DCMAKE_INSTALL_PREFIX="$PWD/build-install"
           cmake --install build-cmake
-          test -f "$PWD/install/include/eigen3/Eigen/Core"
-          test -f "$PWD/install/include/eigen3/Eigen/src/Core/util/McuConfig.h"
+          test -f "$PWD/build-install/include/eigen3/Eigen/Core"
+          test -f "$PWD/build-install/include/eigen3/Eigen/src/Core/util/McuConfig.h"
           mkdir -p build-consumer-src
           cat > build-consumer-src/CMakeLists.txt <<'EOF'
           cmake_minimum_required(VERSION 3.14)
@@ -103,7 +103,7 @@ jobs:
             return ((A * x - x).norm() == 0.0f) ? 0 : 1;
           }
           EOF
-          cmake -S build-consumer-src -B build-consumer -DCMAKE_CXX_COMPILER="${CXX}" -DCMAKE_PREFIX_PATH="$PWD/install"
+          cmake -S build-consumer-src -B build-consumer -DCMAKE_CXX_COMPILER="${CXX}" -DCMAKE_PREFIX_PATH="$PWD/build-install"
           cmake --build build-consumer
           ./build-consumer/app
 
@@ -112,13 +112,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Arm GCC toolchain and QEMU
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            gcc-arm-none-eabi libnewlib-arm-none-eabi qemu-system-arm
+            gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib qemu-system-arm
 
       - name: Run Cortex-M4F/M7 correctness, zero-heap, zero-FP64, and performance regression gate
         run: python3 test_mcu/check_mcu.py --jobs 4
@@ -128,13 +128,13 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Package eigen-mcu archive
         run: bash scripts/package_release.sh --out "$PWD/dist" --verify
 
       - name: Check out public sfwa/ukf
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: sfwa/ukf
           path: ukf
@@ -165,19 +165,19 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Arm GCC toolchain and QEMU
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            gcc-arm-none-eabi libnewlib-arm-none-eabi qemu-system-arm
+            gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib qemu-system-arm
 
       - name: Package eigen-mcu archive
         run: bash scripts/package_release.sh --out "$PWD/dist" --verify
 
       - name: Check out public sfwa/nmpc
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: sfwa/nmpc
           path: nmpc
@@ -277,7 +277,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Verify version, licenses, archive packaging, and CMake install
         run: |

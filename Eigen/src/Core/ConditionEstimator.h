@@ -90,7 +90,7 @@ typename Decomposition::RealScalar rcond_invmatrix_L1_norm_estimate(const Decomp
   // super-gradient to move towards the optimal one.
   RealScalar old_lower_bound = lower_bound;
   Vector sign_vector(n);
-  Vector old_sign_vector;
+  Vector old_sign_vector = Vector::Zero(n);
   Index v_max_abs_index = -1;
   Index old_v_max_abs_index = v_max_abs_index;
   for (int k = 0; k < 4; ++k) {
