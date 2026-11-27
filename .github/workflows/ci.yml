@@ -126,7 +126,7 @@ jobs:
   downstream-ukf:
     name: Downstream sfwa/ukf (Release Archive)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
 
@@ -145,8 +145,10 @@ jobs:
           ARCHIVE="$(ls "$PWD"/dist/eigen-mcu-*.tar.gz)"
           VERSION="$(sed -n 's/^#define EIGEN_VERSION_STRING "\(.*\)"$/\1/p' Eigen/Version)"
           cmake -S ukf -B build-ukf -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS_DEBUG="-g1" \
+            -DUKF_BUILD_BENCHMARKS=OFF \
             -DUKF_EIGEN_VERSION="${VERSION}" -DUKF_EIGEN_URL="${ARCHIVE}"
-          cmake --build build-ukf --target unittest unittest_single ukf_examples --parallel 4
+          cmake --build build-ukf --target unittest unittest_single ukf_examples --parallel 2
           ctest --test-dir build-ukf --output-on-failure
 
       - name: Build and test sfwa/ukf consumer fixture with EIGEN_MCU_SMALL_GEMM=1
@@ -157,7 +159,7 @@ jobs:
           cmake -S ukf/test/cmake -B build-ukf-consumer -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_FLAGS="-DEIGEN_MCU_SMALL_GEMM=1" \
             -DUKF_EIGEN_VERSION="${VERSION}" -DUKF_EIGEN_URL="${ARCHIVE}"
-          cmake --build build-ukf-consumer --parallel 4
+          cmake --build build-ukf-consumer --parallel 2
           ctest --test-dir build-ukf-consumer --output-on-failure
 
   downstream-nmpc:
@@ -190,7 +192,7 @@ jobs:
           cmake -S nmpc -B build-nmpc -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_FLAGS="-DEIGEN_MCU_SMALL_GEMM=1" \
             -DNMPC_EIGEN_VERSION="${VERSION}" -DNMPC_EIGEN_URL="${ARCHIVE}"
-          cmake --build build-nmpc --target unittest unittest_no_heap stop pendulum attitude --parallel 4
+          cmake --build build-nmpc --target unittest unittest_no_heap stop pendulum attitude --parallel 2
           ctest --test-dir build-nmpc --output-on-failure
           ./build-nmpc/examples/stop/stop
           ./build-nmpc/examples/pendulum/pendulum
