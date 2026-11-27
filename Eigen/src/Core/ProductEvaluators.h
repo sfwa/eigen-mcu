@@ -377,6 +377,23 @@ struct generic_product_impl<Lhs, Rhs, DenseShape, DenseShape, GemvProduct>
   enum { Side = Lhs::IsVectorAtCompileTime ? OnTheLeft : OnTheRight };
   typedef internal::remove_all_t<std::conditional_t<int(Side) == OnTheRight, LhsNested, RhsNested>> MatrixType;
 
+#if EIGEN_MCU_SMALL_GEMM
+  template <typename Dest>
+  static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE void evalTo(Dest& dst, const Lhs& lhs, const Rhs& rhs) {
+    if (lhs.rows() == 1 && rhs.cols() == 1) {
+      dst.coeffRef(0, 0) = lhs.row(0).conjugate().dot(rhs.col(0));
+      return;
+    }
+    LhsNested actual_lhs(lhs);
+    RhsNested actual_rhs(rhs);
+    internal::gemv_dense_selector<Side, (int(MatrixType::Flags) & RowMajorBit) ? RowMajor : ColMajor,
+                                  bool(internal::blas_traits<MatrixType>::HasUsableDirectAccess)>::run(actual_lhs,
+                                                                                                       actual_rhs, dst,
+                                                                                                       Scalar(1),
+                                                                                                       /*beta_zero=*/true);
+  }
+#endif
+
   template <typename Dest>
   static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE void scaleAndAddTo(Dest& dst, const Lhs& lhs, const Rhs& rhs,
                                                                   const Scalar& alpha) {

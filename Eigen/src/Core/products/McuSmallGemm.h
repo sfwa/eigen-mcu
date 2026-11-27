@@ -1248,6 +1248,118 @@ EIGEN_ALWAYS_INLINE void mcu_small_gemm_triangular(Index size, Index K, const Sc
 }
 
 // ============================================================================
+// Lightweight Unpacked Small GEMV: y = (beta_zero ? 0 : y) + alpha * A * x
+// 4x1 register blocking for both ColMajor and RowMajor A, supports arbitrary
+// incx/incy with zero scratch allocation and no alpha multiply when alpha == 1.
+// ============================================================================
+
+template <typename Scalar, int StorageOrder>
+EIGEN_DONT_INLINE void mcu_small_gemv(Index rows, Index cols, const Scalar* A, Index lda, const Scalar* x, Index incx,
+                                      Scalar* EIGEN_RESTRICT y, Index incy, Scalar alpha, bool beta_zero = false) {
+  if (rows <= 0) return;
+  if (cols <= 0) {
+    if (beta_zero) {
+      if (incy == 1) {
+        for (Index i = 0; i < rows; ++i) y[i] = Scalar(0);
+      } else {
+        for (Index i = 0; i < rows; ++i) y[i * incy] = Scalar(0);
+      }
+    }
+    return;
+  }
+
+  constexpr bool IsCol = (StorageOrder == ColMajor);
+  const bool alpha_one = (alpha == Scalar(1));
+
+  Index i = 0;
+  for (; i + 4 <= rows; i += 4) {
+    Scalar c0 = Scalar(0), c1 = Scalar(0), c2 = Scalar(0), c3 = Scalar(0);
+    const Scalar* xp = x;
+    EIGEN_IF_CONSTEXPR(IsCol) {
+      const Scalar* ak = A + i;
+      for (Index j = 0; j < cols; ++j) {
+        const Scalar xj = *xp;
+        xp += incx;
+        c0 += ak[0] * xj;
+        c1 += ak[1] * xj;
+        c2 += ak[2] * xj;
+        c3 += ak[3] * xj;
+        ak += lda;
+      }
+    } else {
+      const Scalar* a0 = A + (i + 0) * lda;
+      const Scalar* a1 = a0 + lda;
+      const Scalar* a2 = a1 + lda;
+      const Scalar* a3 = a2 + lda;
+      for (Index j = 0; j < cols; ++j) {
+        const Scalar xj = *xp;
+        xp += incx;
+        c0 += a0[j] * xj;
+        c1 += a1[j] * xj;
+        c2 += a2[j] * xj;
+        c3 += a3[j] * xj;
+      }
+    }
+    if (!alpha_one) {
+      c0 *= alpha;
+      c1 *= alpha;
+      c2 *= alpha;
+      c3 *= alpha;
+    }
+    if (incy == 1) {
+      Scalar* yi = y + i;
+      if (beta_zero) {
+        yi[0] = c0;
+        yi[1] = c1;
+        yi[2] = c2;
+        yi[3] = c3;
+      } else {
+        yi[0] += c0;
+        yi[1] += c1;
+        yi[2] += c2;
+        yi[3] += c3;
+      }
+    } else {
+      if (beta_zero) {
+        y[(i + 0) * incy] = c0;
+        y[(i + 1) * incy] = c1;
+        y[(i + 2) * incy] = c2;
+        y[(i + 3) * incy] = c3;
+      } else {
+        y[(i + 0) * incy] += c0;
+        y[(i + 1) * incy] += c1;
+        y[(i + 2) * incy] += c2;
+        y[(i + 3) * incy] += c3;
+      }
+    }
+  }
+
+  for (; i < rows; ++i) {
+    Scalar c0 = Scalar(0);
+    const Scalar* xp = x;
+    EIGEN_IF_CONSTEXPR(IsCol) {
+      const Scalar* ak = A + i;
+      for (Index j = 0; j < cols; ++j) {
+        c0 += (*ak) * (*xp);
+        ak += lda;
+        xp += incx;
+      }
+    } else {
+      const Scalar* a0 = A + i * lda;
+      for (Index j = 0; j < cols; ++j) {
+        c0 += a0[j] * (*xp);
+        xp += incx;
+      }
+    }
+    if (!alpha_one) c0 *= alpha;
+    if (beta_zero)
+      y[i * incy] = c0;
+    else
+      y[i * incy] += c0;
+  }
+}
+
+// ============================================================================
 // Unblocked Pre-Inverted-Diagonal Small TRSM (N <= 32, zero blocking stack)
 // Hoists all_inv_ok out of the RHS loop and blocks OnTheLeft across 4/2 RHS cols.
 // ============================================================================

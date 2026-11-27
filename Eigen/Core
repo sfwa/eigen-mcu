@@ -379,6 +379,9 @@ using std::ptrdiff_t;
 #include "src/Core/Fuzzy.h"
 #include "src/Core/Swap.h"
 #include "src/Core/CommaInitializer.h"
+#if EIGEN_MCU_SMALL_GEMM
+#include "src/Core/products/McuSmallGemm.h"
+#endif
 #include "src/Core/GeneralProduct.h"
 #include "src/Core/Solve.h"
 #include "src/Core/Inverse.h"
@@ -395,9 +398,6 @@ using std::ptrdiff_t;
 #include "src/Core/products/Parallelizer.h"
 #include "src/Core/ProductEvaluators.h"
 #include "src/Core/products/GeneralMatrixVector.h"
-#if EIGEN_MCU_SMALL_GEMM
-#include "src/Core/products/McuSmallGemm.h"
-#endif
 #include "src/Core/products/GeneralMatrixMatrix.h"
 #include "src/Core/SolveTriangular.h"
 #include "src/Core/products/GeneralMatrixMatrixTriangular.h"

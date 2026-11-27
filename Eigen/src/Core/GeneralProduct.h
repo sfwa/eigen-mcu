@@ -242,8 +242,10 @@ struct gemv_static_vector_if<Scalar, Size, Dynamic, true> {
 
 template <typename Scalar, int Size, int MaxSize>
 struct gemv_static_vector_if<Scalar, Size, MaxSize, true> {
-#if EIGEN_MAX_STATIC_ALIGN_BYTES != 0
-  internal::plain_array<Scalar, internal::min_size_prefer_fixed(Size, MaxSize), 0, AlignedMax> m_data;
+#if EIGEN_MAX_STATIC_ALIGN_BYTES != 0 || EIGEN_MCU_ARCH_CORTEX_M
+  internal::plain_array<Scalar, internal::min_size_prefer_fixed(Size, MaxSize), 0,
+                        EIGEN_MAX_STATIC_ALIGN_BYTES != 0 ? AlignedMax : 0>
+      m_data;
   EIGEN_STRONG_INLINE constexpr Scalar* data() { return m_data.array; }
 #else
   // Some architectures cannot align on the stack,
@@ -260,18 +262,180 @@ struct gemv_static_vector_if<Scalar, Size, MaxSize, true> {
 template <int StorageOrder, bool BlasCompatible>
 struct gemv_dense_selector<OnTheLeft, StorageOrder, BlasCompatible> {
   template <typename Lhs, typename Rhs, typename Dest>
-  static void run(const Lhs& lhs, const Rhs& rhs, Dest& dest, const typename Dest::Scalar& alpha) {
+  static void run(const Lhs& lhs, const Rhs& rhs, Dest& dest, const typename Dest::Scalar& alpha,
+                  bool beta_zero = false) {
     Transpose<Dest> destT(dest);
     enum { OtherStorageOrder = StorageOrder == RowMajor ? ColMajor : RowMajor };
     gemv_dense_selector<OnTheRight, OtherStorageOrder, BlasCompatible>::run(rhs.transpose(), lhs.transpose(), destT,
-                                                                            alpha);
+                                                                            alpha, beta_zero);
   }
 };
+
+#if EIGEN_MCU_SMALL_GEMM
+template <typename Lhs, typename Rhs, typename Dest, typename ActualLhsType, typename ActualRhsType, bool AlwaysSmall,
+          bool Eligible>
+struct mcu_gemv_col_dispatch {
+  static EIGEN_STRONG_INLINE void run(const ActualLhsType& actualLhs, const ActualRhsType& actualRhs, Dest& dest,
+                                      const typename Dest::Scalar& actualAlpha, bool beta_zero) {
+    typedef typename Lhs::Scalar LhsScalar;
+    typedef typename Rhs::Scalar RhsScalar;
+    typedef typename Dest::Scalar ResScalar;
+    typedef internal::blas_traits<Lhs> LhsBlasTraits;
+    typedef internal::blas_traits<Rhs> RhsBlasTraits;
+
+    EIGEN_IF_CONSTEXPR(Eligible) {
+      if (actualLhs.rows() <= EIGEN_MCU_SMALL_GEMM_MAX_DEPTH && actualLhs.cols() <= EIGEN_MCU_SMALL_GEMM_MAX_DEPTH &&
+          (actualLhs.rows() <= EIGEN_MCU_SMALL_GEMM_THRESHOLD || actualLhs.cols() <= EIGEN_MCU_SMALL_GEMM_THRESHOLD)) {
+        mcu_small_gemv<ResScalar, ColMajor>(actualLhs.rows(), actualLhs.cols(), actualLhs.data(),
+                                            actualLhs.outerStride(), actualRhs.data(), actualRhs.innerStride(),
+                                            dest.data(), dest.col(0).innerStride(), actualAlpha, beta_zero);
+        return;
+      }
+    }
+
+    if (beta_zero) dest.setZero();
+
+    typedef Map<Matrix<ResScalar, Dynamic, 1>, plain_enum_min(AlignedMax, internal::packet_traits<ResScalar>::size)>
+        MappedDest;
+    typedef std::conditional_t<Dest::IsVectorAtCompileTime, Dest, typename Dest::ColXpr> ActualDest;
+    enum {
+      EvalToDestAtCompileTime = (ActualDest::InnerStrideAtCompileTime == 1),
+      ComplexByReal = (NumTraits<LhsScalar>::IsComplex) && (!NumTraits<RhsScalar>::IsComplex),
+      MightCannotUseDest = ((!EvalToDestAtCompileTime) || ComplexByReal) && (ActualDest::MaxSizeAtCompileTime != 0)
+    };
+    typedef const_blas_data_mapper<LhsScalar, Index, ColMajor> LhsMapper;
+    typedef const_blas_data_mapper<RhsScalar, Index, RowMajor> RhsMapper;
+    RhsScalar compatibleAlpha = get_factor<ResScalar, RhsScalar>::run(actualAlpha);
+
+    if (!MightCannotUseDest) {
+      general_matrix_vector_product<Index, LhsScalar, LhsMapper, ColMajor, LhsBlasTraits::NeedToConjugate, RhsScalar,
+                                    RhsMapper, RhsBlasTraits::NeedToConjugate>::run(actualLhs.rows(), actualLhs.cols(),
+                                                                                    LhsMapper(actualLhs.data(),
+                                                                                              actualLhs.outerStride()),
+                                                                                    RhsMapper(actualRhs.data(),
+                                                                                              actualRhs.innerStride()),
+                                                                                    dest.data(), 1, compatibleAlpha);
+    } else {
+      gemv_static_vector_if<ResScalar, ActualDest::SizeAtCompileTime, ActualDest::MaxSizeAtCompileTime,
+                            MightCannotUseDest>
+          static_dest;
+      const bool alphaIsCompatible = (!ComplexByReal) || (numext::is_exactly_zero(numext::imag(actualAlpha)));
+      const bool evalToDest = EvalToDestAtCompileTime && alphaIsCompatible;
+
+      ei_declare_aligned_stack_constructed_variable(ResScalar, actualDestPtr, dest.size(),
+                                                    evalToDest ? dest.data() : static_dest.data());
+      if (!evalToDest) {
+#ifdef EIGEN_DENSE_STORAGE_CTOR_PLUGIN
+        constexpr int Size = Dest::SizeAtCompileTime;
+        Index size = dest.size();
+        EIGEN_DENSE_STORAGE_CTOR_PLUGIN
+#endif
+        if (!alphaIsCompatible) {
+          MappedDest(actualDestPtr, dest.size()).setZero();
+          compatibleAlpha = RhsScalar(1);
+        } else
+          MappedDest(actualDestPtr, dest.size()) = dest;
+      }
+
+      general_matrix_vector_product<Index, LhsScalar, LhsMapper, ColMajor, LhsBlasTraits::NeedToConjugate, RhsScalar,
+                                    RhsMapper, RhsBlasTraits::NeedToConjugate>::run(actualLhs.rows(), actualLhs.cols(),
+                                                                                    LhsMapper(actualLhs.data(),
+                                                                                              actualLhs.outerStride()),
+                                                                                    RhsMapper(actualRhs.data(),
+                                                                                              actualRhs.innerStride()),
+                                                                                    actualDestPtr, 1, compatibleAlpha);
+
+      if (!evalToDest) {
+        if (!alphaIsCompatible)
+          dest.matrix() += actualAlpha * MappedDest(actualDestPtr, dest.size());
+        else
+          dest = MappedDest(actualDestPtr, dest.size());
+      }
+    }
+  }
+};
+
+template <typename Lhs, typename Rhs, typename Dest, typename ActualLhsType, typename ActualRhsType>
+struct mcu_gemv_col_dispatch<Lhs, Rhs, Dest, ActualLhsType, ActualRhsType, true, true> {
+  static EIGEN_STRONG_INLINE void run(const ActualLhsType& actualLhs, const ActualRhsType& actualRhs, Dest& dest,
+                                      const typename Dest::Scalar& actualAlpha, bool beta_zero) {
+    mcu_small_gemv<typename Dest::Scalar, ColMajor>(actualLhs.rows(), actualLhs.cols(), actualLhs.data(),
+                                                    actualLhs.outerStride(), actualRhs.data(), actualRhs.innerStride(),
+                                                    dest.data(), dest.col(0).innerStride(), actualAlpha, beta_zero);
+  }
+};
+
+template <typename Lhs, typename Rhs, typename Dest, typename ActualLhsType, typename ActualRhsType, bool AlwaysSmall,
+          bool Eligible>
+struct mcu_gemv_row_dispatch {
+  static EIGEN_STRONG_INLINE void run(const ActualLhsType& actualLhs, const ActualRhsType& actualRhs, Dest& dest,
+                                      const typename Dest::Scalar& actualAlpha, bool beta_zero) {
+    typedef typename Lhs::Scalar LhsScalar;
+    typedef typename Rhs::Scalar RhsScalar;
+    typedef typename Dest::Scalar ResScalar;
+    typedef internal::blas_traits<Lhs> LhsBlasTraits;
+    typedef internal::blas_traits<Rhs> RhsBlasTraits;
+    typedef internal::remove_all_t<ActualRhsType> ActualRhsTypeCleaned;
+
+    EIGEN_IF_CONSTEXPR(Eligible) {
+      if (actualLhs.rows() <= EIGEN_MCU_SMALL_GEMM_MAX_DEPTH && actualLhs.cols() <= EIGEN_MCU_SMALL_GEMM_MAX_DEPTH &&
+          (actualLhs.rows() <= EIGEN_MCU_SMALL_GEMM_THRESHOLD || actualLhs.cols() <= EIGEN_MCU_SMALL_GEMM_THRESHOLD)) {
+        mcu_small_gemv<ResScalar, RowMajor>(actualLhs.rows(), actualLhs.cols(), actualLhs.data(),
+                                            actualLhs.outerStride(), actualRhs.data(), actualRhs.innerStride(),
+                                            dest.data(), dest.col(0).innerStride(), actualAlpha, beta_zero);
+        return;
+      }
+    }
+
+    if (beta_zero) dest.setZero();
+
+    enum {
+      DirectlyUseRhs =
+          ActualRhsTypeCleaned::InnerStrideAtCompileTime == 1 || ActualRhsTypeCleaned::MaxSizeAtCompileTime == 0
+    };
+
+    gemv_static_vector_if<RhsScalar, ActualRhsTypeCleaned::SizeAtCompileTime,
+                          ActualRhsTypeCleaned::MaxSizeAtCompileTime, !DirectlyUseRhs>
+        static_rhs;
+
+    ei_declare_aligned_stack_constructed_variable(
+        RhsScalar, actualRhsPtr, actualRhs.size(),
+        DirectlyUseRhs ? const_cast<RhsScalar*>(actualRhs.data()) : static_rhs.data());
+
+    if (!DirectlyUseRhs) {
+#ifdef EIGEN_DENSE_STORAGE_CTOR_PLUGIN
+      constexpr int Size = ActualRhsTypeCleaned::SizeAtCompileTime;
+      Index size = actualRhs.size();
+      EIGEN_DENSE_STORAGE_CTOR_PLUGIN
+#endif
+      Map<typename ActualRhsTypeCleaned::PlainObject>(actualRhsPtr, actualRhs.size()) = actualRhs;
+    }
+
+    typedef const_blas_data_mapper<LhsScalar, Index, RowMajor> LhsMapper;
+    typedef const_blas_data_mapper<RhsScalar, Index, ColMajor> RhsMapper;
+    general_matrix_vector_product<Index, LhsScalar, LhsMapper, RowMajor, LhsBlasTraits::NeedToConjugate, RhsScalar,
+                                  RhsMapper, RhsBlasTraits::NeedToConjugate>::
+        run(actualLhs.rows(), actualLhs.cols(), LhsMapper(actualLhs.data(), actualLhs.outerStride()),
+            RhsMapper(actualRhsPtr, 1), dest.data(), dest.col(0).innerStride(), actualAlpha);
+  }
+};
+
+template <typename Lhs, typename Rhs, typename Dest, typename ActualLhsType, typename ActualRhsType>
+struct mcu_gemv_row_dispatch<Lhs, Rhs, Dest, ActualLhsType, ActualRhsType, true, true> {
+  static EIGEN_STRONG_INLINE void run(const ActualLhsType& actualLhs, const ActualRhsType& actualRhs, Dest& dest,
+                                      const typename Dest::Scalar& actualAlpha, bool beta_zero) {
+    mcu_small_gemv<typename Dest::Scalar, RowMajor>(actualLhs.rows(), actualLhs.cols(), actualLhs.data(),
+                                                    actualLhs.outerStride(), actualRhs.data(), actualRhs.innerStride(),
+                                                    dest.data(), dest.col(0).innerStride(), actualAlpha, beta_zero);
+  }
+};
+#endif
 
 template <>
 struct gemv_dense_selector<OnTheRight, ColMajor, true> {
   template <typename Lhs, typename Rhs, typename Dest>
-  static inline void run(const Lhs& lhs, const Rhs& rhs, Dest& dest, const typename Dest::Scalar& alpha) {
+  static inline void run(const Lhs& lhs, const Rhs& rhs, Dest& dest, const typename Dest::Scalar& alpha,
+                         bool beta_zero = false) {
     typedef typename Lhs::Scalar LhsScalar;
     typedef typename Rhs::Scalar RhsScalar;
     typedef typename Dest::Scalar ResScalar;
@@ -281,13 +445,34 @@ struct gemv_dense_selector<OnTheRight, ColMajor, true> {
     typedef internal::blas_traits<Rhs> RhsBlasTraits;
     typedef typename RhsBlasTraits::DirectLinearAccessType ActualRhsType;
 
-    typedef Map<Matrix<ResScalar, Dynamic, 1>, plain_enum_min(AlignedMax, internal::packet_traits<ResScalar>::size)>
-        MappedDest;
-
     ActualLhsType actualLhs = LhsBlasTraits::extract(lhs);
     ActualRhsType actualRhs = RhsBlasTraits::extract(rhs);
 
     ResScalar actualAlpha = combine_scalar_factors(alpha, lhs, rhs);
+
+#if EIGEN_MCU_SMALL_GEMM
+    typedef internal::remove_all_t<ActualLhsType> ActualLhsTypeCleaned;
+    typedef internal::remove_all_t<ActualRhsType> ActualRhsTypeCleaned;
+    constexpr bool kMcuEligible =
+        is_same<LhsScalar, ResScalar>::value && is_same<RhsScalar, ResScalar>::value &&
+        (is_same<ResScalar, float>::value || is_same<ResScalar, double>::value) &&
+        !bool(LhsBlasTraits::NeedToConjugate) && !bool(RhsBlasTraits::NeedToConjugate) &&
+        (ActualLhsTypeCleaned::InnerStrideAtCompileTime == 1) && bool(Dest::Flags & DirectAccessBit);
+    constexpr bool kMcuAlwaysSmall =
+        kMcuEligible &&
+        (ActualLhsTypeCleaned::MaxRowsAtCompileTime != Dynamic &&
+         ActualLhsTypeCleaned::MaxColsAtCompileTime != Dynamic &&
+         ActualLhsTypeCleaned::MaxRowsAtCompileTime <= EIGEN_MCU_SMALL_GEMM_MAX_DEPTH &&
+         ActualLhsTypeCleaned::MaxColsAtCompileTime <= EIGEN_MCU_SMALL_GEMM_MAX_DEPTH &&
+         (ActualLhsTypeCleaned::MaxRowsAtCompileTime <= EIGEN_MCU_SMALL_GEMM_THRESHOLD ||
+          ActualLhsTypeCleaned::MaxColsAtCompileTime <= EIGEN_MCU_SMALL_GEMM_THRESHOLD));
+    mcu_gemv_col_dispatch<Lhs, Rhs, Dest, ActualLhsTypeCleaned, ActualRhsTypeCleaned, kMcuAlwaysSmall,
+                          kMcuEligible>::run(actualLhs, actualRhs, dest, actualAlpha, beta_zero);
+#else
+    if (beta_zero) dest.setZero();
+
+    typedef Map<Matrix<ResScalar, Dynamic, 1>, plain_enum_min(AlignedMax, internal::packet_traits<ResScalar>::size)>
+        MappedDest;
 
     // make sure Dest is a compile-time vector type (bug 1166)
     typedef std::conditional_t<Dest::IsVectorAtCompileTime, Dest, typename Dest::ColXpr> ActualDest;
@@ -353,13 +538,15 @@ struct gemv_dense_selector<OnTheRight, ColMajor, true> {
           dest = MappedDest(actualDestPtr, dest.size());
       }
     }
+#endif
   }
 };
 
 template <>
 struct gemv_dense_selector<OnTheRight, RowMajor, true> {
   template <typename Lhs, typename Rhs, typename Dest>
-  static void run(const Lhs& lhs, const Rhs& rhs, Dest& dest, const typename Dest::Scalar& alpha) {
+  static void run(const Lhs& lhs, const Rhs& rhs, Dest& dest, const typename Dest::Scalar& alpha,
+                  bool beta_zero = false) {
     typedef typename Lhs::Scalar LhsScalar;
     typedef typename Rhs::Scalar RhsScalar;
     typedef typename Dest::Scalar ResScalar;
@@ -374,6 +561,26 @@ struct gemv_dense_selector<OnTheRight, RowMajor, true> {
     std::add_const_t<ActualRhsType> actualRhs = RhsBlasTraits::extract(rhs);
 
     ResScalar actualAlpha = combine_scalar_factors(alpha, lhs, rhs);
+
+#if EIGEN_MCU_SMALL_GEMM
+    typedef internal::remove_all_t<ActualLhsType> ActualLhsTypeCleaned;
+    constexpr bool kMcuEligible =
+        is_same<LhsScalar, ResScalar>::value && is_same<RhsScalar, ResScalar>::value &&
+        (is_same<ResScalar, float>::value || is_same<ResScalar, double>::value) &&
+        !bool(LhsBlasTraits::NeedToConjugate) && !bool(RhsBlasTraits::NeedToConjugate) &&
+        (ActualLhsTypeCleaned::InnerStrideAtCompileTime == 1) && bool(Dest::Flags & DirectAccessBit);
+    constexpr bool kMcuAlwaysSmall =
+        kMcuEligible &&
+        (ActualLhsTypeCleaned::MaxRowsAtCompileTime != Dynamic &&
+         ActualLhsTypeCleaned::MaxColsAtCompileTime != Dynamic &&
+         ActualLhsTypeCleaned::MaxRowsAtCompileTime <= EIGEN_MCU_SMALL_GEMM_MAX_DEPTH &&
+         ActualLhsTypeCleaned::MaxColsAtCompileTime <= EIGEN_MCU_SMALL_GEMM_MAX_DEPTH &&
+         (ActualLhsTypeCleaned::MaxRowsAtCompileTime <= EIGEN_MCU_SMALL_GEMM_THRESHOLD ||
+          ActualLhsTypeCleaned::MaxColsAtCompileTime <= EIGEN_MCU_SMALL_GEMM_THRESHOLD));
+    mcu_gemv_row_dispatch<Lhs, Rhs, Dest, ActualLhsTypeCleaned, ActualRhsTypeCleaned, kMcuAlwaysSmall,
+                          kMcuEligible>::run(actualLhs, actualRhs, dest, actualAlpha, beta_zero);
+#else
+    if (beta_zero) dest.setZero();
 
     enum {
       // FIXME find a way to allow an inner stride on the result if packet_traits<Scalar>::size==1
@@ -408,15 +615,18 @@ struct gemv_dense_selector<OnTheRight, RowMajor, true> {
             dest.col(0).innerStride(),  // NOTE  if dest is not a vector at compile-time, then dest.innerStride() might
                                         // be wrong. (bug 1166)
             actualAlpha);
+#endif
   }
 };
 
 template <>
 struct gemv_dense_selector<OnTheRight, ColMajor, false> {
   template <typename Lhs, typename Rhs, typename Dest>
-  static void run(const Lhs& lhs, const Rhs& rhs, Dest& dest, const typename Dest::Scalar& alpha) {
+  static void run(const Lhs& lhs, const Rhs& rhs, Dest& dest, const typename Dest::Scalar& alpha,
+                  bool beta_zero = false) {
     EIGEN_STATIC_ASSERT((!nested_eval<Lhs, 1>::Evaluate),
                         EIGEN_INTERNAL_COMPILATION_ERROR_OR_YOU_MADE_A_PROGRAMMING_MISTAKE);
+    if (beta_zero) dest.setZero();
     // TODO if rhs is large enough it might be beneficial to make sure that dest is sequentially stored in memory,
     // otherwise use a temp
     typename nested_eval<Rhs, 1>::type actual_rhs(rhs);
@@ -428,9 +638,11 @@ struct gemv_dense_selector<OnTheRight, ColMajor, false> {
 template <>
 struct gemv_dense_selector<OnTheRight, RowMajor, false> {
   template <typename Lhs, typename Rhs, typename Dest>
-  static void run(const Lhs& lhs, const Rhs& rhs, Dest& dest, const typename Dest::Scalar& alpha) {
+  static void run(const Lhs& lhs, const Rhs& rhs, Dest& dest, const typename Dest::Scalar& alpha,
+                  bool beta_zero = false) {
     EIGEN_STATIC_ASSERT((!nested_eval<Lhs, 1>::Evaluate),
                         EIGEN_INTERNAL_COMPILATION_ERROR_OR_YOU_MADE_A_PROGRAMMING_MISTAKE);
+    if (beta_zero) dest.setZero();
     typename nested_eval<Rhs, Lhs::RowsAtCompileTime>::type actual_rhs(rhs);
     const Index rows = dest.rows();
     for (Index i = 0; i < rows; ++i)
